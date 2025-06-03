@@ -8,6 +8,7 @@ from sklearn.metrics import mean_squared_error
 import requests
 import time # Import time for rate limiting
 import datetime # Import datetime to get current year
+import numpy as np # Import numpy for nanmean and average
 
 # Get current year dynamically
 current_year = datetime.datetime.now().year
@@ -129,7 +130,6 @@ api_hitting_stat_map = {
 
 api_pitching_stat_map = {
     'strikeouts': 'strikeOuts', # API key for pitcher strikeouts
-    # Add other pitching stats here later if needed
 }
 
 # 3. Prepare data for TRAINING (using MLB Stats API game logs for 2023 and 2024)
@@ -137,19 +137,19 @@ api_pitching_stat_map = {
 hitting_data_train = []
 pitching_data_train = []
 
-print("\n--- Preparing Training Data ({year_minus_2}-{year_minus_1}) ---")
+training_years = [year_minus_1, year_minus_2]
 
-for player_id in player_ids:
+print(f"\n--- Preparing Training Data ({year_minus_2}-{year_minus_1}) ---")
+
+# Use the comprehensive player map to get player IDs for training data (only include those with position info)
+training_player_ids = [pid for pid, info in player_info_map.items() if info.get('primaryPosition', {}).get('code') != 'Unknown']
+
+print(f"Preparing training data for {len(training_player_ids)} players with known positions from {year_minus_2}-{year_minus_1}.")
+
+for player_id in training_player_ids:
     player_info = player_info_map.get(player_id, {})
     primary_position_code = player_info.get('primaryPosition', {}).get('code', 'Unknown')
     is_pitcher = primary_position_code in ['P', 'SP', 'RP']
-
-    # Only process players with known positions for training
-    if primary_position_code == 'Unknown':
-         # print(f"Skipping training data for player {player_info.get('fullName', f'ID: {player_id}')} (ID: {player_id}): Unknown position.")
-         continue
-
-    # print(f"Processing {player_info.get('fullName', f'ID: {player_id}')} (ID: {player_id}, Pos: {primary_position_code}) for training data.")
 
     try:
         all_logs = []
@@ -164,7 +164,6 @@ for player_id in player_ids:
             api_stat_map_current = api_hitting_stat_map
 
         if not stats_to_process: # Skip if no relevant stats for this position
-             # print(f"Skipping player {player_id}: No relevant stats defined for position {primary_position_code}")
              time.sleep(0.05)
              continue
 
@@ -193,7 +192,6 @@ for player_id in player_ids:
                       all_logs.append(pd.DataFrame(game_data_list))
 
         if not all_logs:
-            # print(f"No valid {log_group} game logs found for training for player {player_id} across {year_minus_2} and {year_minus_1}")
             time.sleep(0.05)
             continue
 
@@ -201,7 +199,6 @@ for player_id in player_ids:
 
         # Require at least two games to calculate features and have a target game for training
         if logs.empty or len(logs) < 2:
-            # print(f"Skipping training data for player {player_id}: Not enough {log_group} game logs ({len(logs)} found) across {year_minus_2} and {year_minus_1} to calculate features/target")
             time.sleep(0.05)
             continue
 
@@ -211,19 +208,51 @@ for player_id in player_ids:
         # Features for training are based on all but the last game in the logs
         historical_logs = logs.iloc[:-1]
 
-        # Calculate last 10 games from the most recent season in historical logs for training
-        latest_year_in_logs = historical_logs['game_date'].dt.year.max()
-        if latest_year_in_logs:
-            last_10_logs = historical_logs[historical_logs['game_date'].dt.year == latest_year_in_logs].tail(10)
-        else:
-            last_10_logs = pd.DataFrame() # Empty if no latest year found (shouldn't happen with < 2 game check)
-
+        # Calculate various historical features
         features = {}
-        # Calculate weighted features using the stats relevant to the position
         for stat_name, api_key in api_stat_map_current.items():
-             last_10_avg = last_10_logs[api_key].mean() if api_key in last_10_logs.columns and not last_10_logs.empty else 0
-             hist_avg = historical_logs[api_key].mean() if api_key in historical_logs.columns and not historical_logs.empty else 0
-             features[f"{stat_name}_weighted"] = 0.75 * last_10_avg + 0.25 * hist_avg # Use 75/25 weighting for training
+             # Ensure stat column exists before calculating
+             if api_key in historical_logs.columns:
+                 # Rolling 10-game average from the most recent season in historical logs
+                 latest_year_in_logs = historical_logs['game_date'].dt.year.max()
+                 if latest_year_in_logs:
+                     rolling_10_logs = historical_logs[historical_logs['game_date'].dt.year == latest_year_in_logs][api_key].rolling(window=10).mean().iloc[-1] if len(historical_logs[historical_logs['game_date'].dt.year == latest_year_in_logs]) >= 10 else np.nan
+                 else:
+                     rolling_10_logs = np.nan
+
+                 # Rolling 5-game average (based on the last game in historical_logs)
+                 rolling_5_avg = historical_logs[api_key].rolling(window=5).mean().iloc[-1] if len(historical_logs) >= 5 else np.nan # Use np.nan for missing values
+
+                 # Rolling 3-game average (based on the last game in historical_logs)
+                 rolling_3_avg = historical_logs[api_key].rolling(window=3).mean().iloc[-1] if len(historical_logs) >= 3 else np.nan # Use np.nan for missing values
+
+                 # Overall historical average (based on all historical logs)
+                 hist_avg = historical_logs[api_key].mean() if not historical_logs.empty else 0 # Keep 0 for overall if no history
+
+                 # Combine recent averages using specified weights, ignoring NaN values
+                 recent_averages_with_weights = []
+                 if not np.isnan(rolling_10_logs):
+                      recent_averages_with_weights.append((rolling_10_logs, 0.25))
+                 if not np.isnan(rolling_5_avg):
+                      recent_averages_with_weights.append((rolling_5_avg, 0.35))
+                 if not np.isnan(rolling_3_avg):
+                      recent_averages_with_weights.append((rolling_3_avg, 0.4))
+
+                 if recent_averages_with_weights:
+                      averages = [item[0] for item in recent_averages_with_weights]
+                      weights = [item[1] for item in recent_averages_with_weights]
+                      # Normalize weights if not all components are present
+                      normalized_weights = np.array(weights) / np.sum(weights)
+                      recent_weighted_avg = np.average(averages, weights=normalized_weights)
+                 else:
+                      recent_weighted_avg = 0
+
+                 # Create the final weighted feature (75% recent, 25% historical)
+                 features[f"{stat_name}_weighted_feature"] = 0.75 * recent_weighted_avg + 0.25 * hist_avg
+
+             else:
+                 # Add the combined weighted feature with 0 if stat column doesn't exist
+                 features[f"{stat_name}_weighted_feature"] = 0
 
         # Targets: next game's stats (which is the last game in the sorted logs for training)
         target_row = logs.iloc[-1]
@@ -261,19 +290,35 @@ print(f"DataFrame shape: {pitching_df_train.shape}")
 trained_hitting_models = {}
 hitting_stats_to_predict = hitting_stats # All hitting_stats will be predicted for batters
 
+# Define the single weighted hitting feature column name
+hitting_weighted_feature_cols = [f'{stat}_weighted_feature' for stat in hitting_stats]
+
 print("\n--- Training Hitting Models ---")
 if not hitting_df_train.empty:
     for stat in hitting_stats_to_predict:
-        weighted_cols = [f'{s}_weighted' for s in hitting_stats] # Features are all hitting weighted stats
-        # Filter df to only include rows where all weighted columns are present and not NaN/Inf
-        df_cleaned = hitting_df_train.dropna(subset=weighted_cols + [f'target_{stat}']).replace([float('inf'), float('-inf')], float('nan')).dropna(subset=weighted_cols + [f'target_{stat}'])
+        # The feature for this stat is the single weighted feature
+        feature_col = f'{stat}_weighted_feature'
+        target_col = f'target_{stat}'
+
+        # Filter df to only include rows where the feature and target columns are present and not NaN/Inf
+        cols_to_check = [feature_col, target_col]
+
+        # Ensure all necessary feature columns exist in the DataFrame before cleaning
+        valid_cols_to_check = [col for col in cols_to_check if col in hitting_df_train.columns]
+
+        if len(valid_cols_to_check) < len(cols_to_check):
+             print(f"Skipping training for Hitting {stat.upper()}: Missing one or more feature/target columns.")
+             continue
+
+        df_cleaned = hitting_df_train.dropna(subset=valid_cols_to_check).replace([float('inf'), float('-inf')], float('nan')).dropna(subset=valid_cols_to_check)
 
         if df_cleaned.empty:
             print(f"Skipping training for Hitting {stat.upper()}: No valid data after cleaning.")
             continue
 
-        X = df_cleaned[weighted_cols]
-        y = df_cleaned[f'target_{stat}']
+        # Use only the single weighted feature for training this model
+        X = df_cleaned[[feature_col]] # X needs to be a DataFrame (list of columns)
+        y = df_cleaned[target_col]
 
         if len(X) < 2:
             print(f"Skipping training for Hitting {stat.upper()}: Not enough data ({len(X)} samples) for train-test split.")
@@ -295,21 +340,35 @@ else:
 trained_pitching_models = {}
 pitching_stats_to_predict = pitching_stats # Only pitcher_strikeouts for now
 
+# Define the single weighted pitching feature column name
+pitching_weighted_feature_cols = [f'{stat}_weighted_feature' for stat in pitching_stats]
+
 print("\n--- Training Pitching Models ---")
 if not pitching_df_train.empty:
      for stat in pitching_stats_to_predict:
-        # Features for pitching model could be based on pitching weighted stats
-        # For now, let's use only the pitcher_strikeouts_weighted feature
-        weighted_cols = [f'{s}_weighted' for s in pitching_stats] # Features are pitcher weighted stats
-        df_cleaned = pitching_df_train.dropna(subset=weighted_cols + [f'target_{stat}']).replace([float('inf'), float('-inf')], float('nan')).dropna(subset=weighted_cols + [f'target_{stat}'])
+        # The feature for this stat is the single weighted feature
+        feature_col = f'{stat}_weighted_feature'
+        target_col = f'target_{stat}'
+
+        # Filter df to only include rows where the feature and target columns are present and not NaN/Inf
+        cols_to_check = [feature_col, target_col]
+
+        # Ensure all necessary feature columns exist in the DataFrame before cleaning
+        valid_cols_to_check = [col for col in cols_to_check if col in pitching_df_train.columns]
+
+        if len(valid_cols_to_check) < len(cols_to_check):
+             print(f"Skipping training for Pitching {stat.upper()}: Missing one or more feature/target columns.")
+             continue
+
+        df_cleaned = pitching_df_train.dropna(subset=valid_cols_to_check).replace([float('inf'), float('-inf')], float('nan')).dropna(subset=valid_cols_to_check)
 
         if df_cleaned.empty:
             print(f"Skipping training for Pitching {stat.upper()}: No valid data after cleaning.")
             continue
 
         # Ensure the features are in a list of lists or DataFrame for the model
-        X = df_cleaned[weighted_cols]
-        y = df_cleaned[f'target_{stat}']
+        X = df_cleaned[[feature_col]] # X needs to be a DataFrame (list of columns)
+        y = df_cleaned[target_col]
 
         if len(X) < 2:
             print(f"Skipping training for Pitching {stat.upper()}: Not enough data ({len(X)} samples) for train-test split.")
@@ -355,14 +414,16 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
             stats_to_process = pitching_stats
             api_stat_map_current = api_pitching_stat_map
             trained_models = trained_pitching_models
-            weighted_cols = [f'{s}_weighted' for s in pitching_stats]
+            # The feature for this stat is the single weighted feature
+            feature_cols = [f'{stat}_weighted_feature' for stat in stats_to_process]
             print(f"  -> Classified as Pitcher for prediction. Fetching {log_group} logs.")
         else:
             log_group = 'hitting'
             stats_to_process = hitting_stats
             api_stat_map_current = api_hitting_stat_map
             trained_models = trained_hitting_models
-            weighted_cols = [f'{s}_weighted' for s in hitting_stats]
+            # The feature for this stat is the single weighted feature
+            feature_cols = [f'{stat}_weighted_feature' for stat in stats_to_process]
             print(f"  -> Classified as Hitter for prediction. Fetching {log_group} logs.")
 
         if not stats_to_process:
@@ -412,18 +473,50 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
         # Features for prediction are based on ALL available logs (2023, 2024, 2025)
         historical_logs = logs.copy() # Use all logs as historical for prediction features
 
-        # Calculate last 10 games from the most recent season in historical logs for prediction
-        latest_year_in_logs = historical_logs['game_date'].dt.year.max()
-        if latest_year_in_logs:
-            last_10_logs = historical_logs[historical_logs['game_date'].dt.year == latest_year_in_logs].tail(10)
-        else:
-             last_10_logs = pd.DataFrame() # Empty if no latest year found
-
+        # Calculate various historical features for prediction
         features = {}
         for stat_name, api_key in api_stat_map_current.items():
-             last_10_avg = last_10_logs[api_key].mean() if api_key in last_10_logs.columns and not last_10_logs.empty else 0
-             hist_avg = historical_logs[api_key].mean() if api_key in historical_logs.columns and not historical_logs.empty else 0
-             features[f"{stat_name}_weighted"] = 0.75 * last_10_avg + 0.25 * hist_avg # Use 75/25 weighting for prediction
+            if api_key in historical_logs.columns:
+                # Rolling 10-game average from the most recent season in historical logs
+                latest_year_in_logs = historical_logs['game_date'].dt.year.max()
+                if latest_year_in_logs:
+                    rolling_10_logs = historical_logs[historical_logs['game_date'].dt.year == latest_year_in_logs][api_key].rolling(window=10).mean().iloc[-1] if len(historical_logs[historical_logs['game_date'].dt.year == latest_year_in_logs]) >= 10 else np.nan
+                else:
+                    rolling_10_logs = np.nan
+
+                # Rolling 5-game average (based on the last game in historical_logs)
+                rolling_5_avg = historical_logs[api_key].rolling(window=5).mean().iloc[-1] if len(historical_logs) >= 5 else np.nan # Use np.nan for missing values
+
+                # Rolling 3-game average (based on the last game in historical_logs)
+                rolling_3_avg = historical_logs[api_key].rolling(window=3).mean().iloc[-1] if len(historical_logs) >= 3 else np.nan # Use np.nan for missing values
+
+                # Overall historical average (based on all historical logs)
+                hist_avg = historical_logs[api_key].mean() if not historical_logs.empty else 0 # Keep 0 for overall if no history
+
+                # Combine recent averages using specified weights, ignoring NaN values
+                recent_averages_with_weights = []
+                if not np.isnan(rolling_10_logs):
+                     recent_averages_with_weights.append((rolling_10_logs, 0.25))
+                if not np.isnan(rolling_5_avg):
+                     recent_averages_with_weights.append((rolling_5_avg, 0.35))
+                if not np.isnan(rolling_3_avg):
+                     recent_averages_with_weights.append((rolling_3_avg, 0.4))
+
+                if recent_averages_with_weights:
+                      averages = [item[0] for item in recent_averages_with_weights]
+                      weights = [item[1] for item in recent_averages_with_weights]
+                      # Normalize weights if not all components are present
+                      normalized_weights = np.array(weights) / np.sum(weights)
+                      recent_weighted_avg = np.average(averages, weights=normalized_weights)
+                else:
+                      recent_weighted_avg = 0
+
+                # Create the final weighted feature (75% recent, 25% historical)
+                features[f"{stat_name}_weighted_feature"] = 0.75 * recent_weighted_avg + 0.25 * hist_avg
+
+            else:
+                 # Add the combined weighted feature with 0 if stat column doesn't exist
+                 features[f"{stat_name}_weighted_feature"] = 0
 
         # Create a DataFrame for prediction
         X_predict = pd.DataFrame([features])
@@ -431,17 +524,32 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
              print(f"No models were trained for {log_group}. Cannot make predictions.")
              return None
 
-        X_predict = X_predict.reindex(columns=weighted_cols, fill_value=0)
+        # Ensure the prediction DataFrame has all the features the model was trained on
+        # If a player is missing a certain historical average (e.g., not enough games), fill with 0
+        # Use the correct feature columns list based on position
+        X_predict = X_predict.reindex(columns=feature_cols, fill_value=0)
 
         predictions = {}
         for stat in stats_to_process:
             if stat in trained_models: # Check if a model was trained for this stat
                 model = trained_models[stat]
-                prediction = model.predict(X_predict)[0]
+                # Predict using the single weighted feature for this stat
+                prediction = model.predict(X_predict[[f'{stat}_weighted_feature']])[0]
                 predictions[stat] = max(0, round(prediction)) # Predictions can't be negative
             else:
                 print(f"No model trained for {stat}. Skipping prediction.")
                 predictions[stat] = None
+
+        # Post-prediction adjustment for logical consistency:
+        # Ensure predicted total bases are at least equal to predicted hits for batters
+        if log_group == 'hitting' and 'hits' in predictions and 'total_bases' in predictions:
+            predicted_hits = predictions.get('hits', 0) # Get predicted hits, default to 0 if missing
+            predicted_total_bases = predictions.get('total_bases', 0) # Get predicted total bases, default to 0 if missing
+
+            # Ensure predicted total bases is not less than predicted hits
+            if predicted_total_bases < predicted_hits:
+                print(f"Adjusting predicted Total Bases for player {player_id} from {predicted_total_bases} to {predicted_hits} (equal to Hits) for logical consistency.")
+                predictions['total_bases'] = predicted_hits
 
         return predictions
 
@@ -454,92 +562,123 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
 
 # 6. Train models for each stat group and store them
 # Models are trained on 2023 and 2024 data (hitting_df_train, pitching_df_train)
+# This part runs when the script starts
 
-# Optional: Loop through all players and print predictions using 2023, 2024, and 2025 data
-print(f"\n--- Predictions for All Players (based on data through {year_plus_0})---")
+# Function to find player ID by name (simplified - may need refinement for exact matches)
+# def find_player_id_by_name(player_name, player_info_map):
+#     # This search can be slow for many players. Consider optimizing if needed.
+#     for player_id, info in player_info_map.items():
+#         if info.get('fullName', '').lower() == player_name.lower():
+#             return player_id
+#     return None
 
-# Re-fetch player IDs including those who may only appear in the current year (2025)
-# This ensures we attempt predictions for players active in 2025 even if they weren't in the last two full seasons
-all_player_ids = set()
-all_player_info_map = {}
+# New function to run predictions for a list of player names
+# def run_predictions_for_players(player_names_list, player_info_map_comprehensive, trained_hitting_models, trained_pitching_models, api_hitting_stat_map, api_pitching_stat_map, hitting_stats, pitching_stats):
+#     print("\n--- Running Predictions for Specified Players ---")
+#     if not trained_hitting_models and not trained_pitching_models:
+#         print("No models were trained. Cannot run predictions.")
+#         return
+#
+#     for name in player_names_list:
+#         # Use the comprehensive map to find the player ID
+#         player_id = find_player_id_by_name(name, player_info_map_comprehensive)
+#         if player_id:
+#             # Call the existing prediction function for the found player ID
+#             predicted_stats = predict_player_stats(player_id, trained_hitting_models, trained_pitching_models, api_hitting_stat_map, api_pitching_stat_map, hitting_stats, pitching_stats, player_info_map_comprehensive)
+#             if predicted_stats:
+#                  player_info = player_info_map_comprehensive.get(player_id, {})
+#                  player_name = player_info.get('fullName', f"ID: {player_id}")
+#                  primary_position_code = player_info.get('primaryPosition', {}).get('code', 'Unknown')
+#                  is_pitcher = primary_position_code in ['P', 'SP', 'RP']
+#
+#                  stats_to_display = pitching_stats if is_pitcher else hitting_stats
+#
+#                  print(f"\n{player_name} (ID: {player_id}, Pos: {primary_position_code}):")
+#                  for stat in stats_to_display:
+#                      if stat in predicted_stats and predicted_stats[stat] is not None:
+#                          if stat == 'strikeouts':
+#                              formatted_stat_name = "Pitcher Strikeouts" if is_pitcher else "Hitter Strikeouts"
+#                          else:
+#                               formatted_stat_name = stat.replace('_weighted', '').replace('total_bases', 'Total Bases').replace('home_runs', 'Home Runs').replace('rbi', 'RBI').capitalize()
+#                          print(f"  {formatted_stat_name}: {predicted_stats[stat]}")
+#                      elif stat in predicted_stats:
+#                           if stat == 'strikeouts':
+#                              formatted_stat_name = "Pitcher Strikeouts" if is_pitcher else "Hitter Strikeouts"
+#                           else:
+#                               formatted_stat_name = stat.replace('_weighted', '').replace('total_bases', 'Total Bases').replace('home_runs', 'Home Runs').replace('rbi', 'RBI').capitalize()
+#                           print(f"  {formatted_stat_name}: N/A (Model not trained or data issue)")
+#
+#         else:
+#             print(f"\nCould not find player ID for name: {name}. Skipping prediction.")
+#     print("\n--- Finished Predictions ---")
 
-for year in [year_minus_1, year_minus_2, year_plus_0]:
-    for group in ['hitting', 'pitching']:
-        season_stats_url = f"https://statsapi.mlb.com/api/v1/stats?stats=season&group={group}&season={year}"
-        try:
-            response = requests.get(season_stats_url)
-            response.raise_for_status()
-            season_stats_data = response.json()
-            if season_stats_data and 'stats' in season_stats_data and len(season_stats_data['stats']) > 0 and 'splits' in season_stats_data['stats'][0]:
-                player_splits = season_stats_data['stats'][0]['splits']
-                for entry in player_splits:
-                    player_info = entry.get('player')
-                    if player_info and 'id' in player_info:
-                        player_id = player_info['id']
-                        all_player_ids.add(player_id)
-                        # Update info, prioritizing later years/pitching position if found
-                        current_info = all_player_info_map.get(player_id, {})
-                        new_info = {
-                            'fullName': player_info.get('fullName', f'Player ID: {player_id}'),
-                             'primaryPosition': player_info.get('primaryPosition', current_info.get('primaryPosition', {}))
-                        }
-                        # If the new position is pitching and old wasn't, or no old position, update
-                        if new_info['primaryPosition'].get('code') in ['P', 'SP', 'RP'] and current_info.get('primaryPosition', {}).get('code') not in ['P', 'SP', 'RP']:
-                            all_player_info_map[player_id] = new_info
-                        elif player_id not in all_player_info_map:
-                            all_player_info_map[player_id] = new_info
-                        # Also update name if more recent data has it (less critical)
-                        elif 'fullName' in player_info:
-                             all_player_info_map[player_id]['fullName'] = player_info['fullName']
+# Example usage (commented out - uncomment and replace with actual player names
+# from your scraper when ready):
+# players_from_scraper = ["Shohei Ohtani", "Ronald Acuna Jr.", "Gerrit Cole"]
+# run_predictions_for_players(players_from_scraper, player_info_map_comprehensive, trained_hitting_models, trained_pitching_models, api_hitting_stat_map, api_pitching_stat_map, hitting_stats, pitching_stats)
 
-        except requests.exceptions.RequestException as e:
-            print(f"Error fetching season stats for player list in {year} ({group}): {e}")
-        time.sleep(0.05) # Small delay
+# Run predictions for all players found
+print("\n--- Running Predictions for All Found Players ---")
+if not trained_hitting_models and not trained_pitching_models:
+    print("No models were trained. Cannot run predictions for all players.")
+else:
+    # Use player_info_map for all players found initially, as it has the most comprehensive list
+    # Filter out players with unknown positions if you only want to predict for known positions
+    # Or, if you want to try predicting for all and handle errors within predict_player_stats:
+    players_to_predict_ids = list(player_info_map.keys()) # Use keys from the map for full list
+    total_players_to_predict = len(players_to_predict_ids)
+    print(f"Attempting to predict for {total_players_to_predict} players.")
 
-# Attempt to enrich player info with position for all found players if missing
-print("Attempting to enrich position information for all players found...")
-final_player_info_map = {}
-for player_id in all_player_ids:
-    if player_id not in all_player_info_map or not all_player_info_map[player_id].get('primaryPosition', {}).get('code'):
-        details = get_player_details(player_id)
-        if details:
-             final_player_info_map[player_id] = details
-        else:
-             final_player_info_map[player_id] = all_player_info_map.get(player_id, {'fullName': f'Player ID: {player_id}', 'primaryPosition': {}})
+    predicted_data = [] # To store predictions in a list
+
+    for i, player_id in enumerate(players_to_predict_ids):
+        print(f"Processing player {i+1}/{total_players_to_predict} (ID: {player_id})...")
+        # Pass the comprehensive map to the prediction function
+        predicted_stats = predict_player_stats(player_id, trained_hitting_models, trained_pitching_models, api_hitting_stat_map, api_pitching_stat_map, hitting_stats, pitching_stats, player_info_map)
+
+        if predicted_stats:
+             player_info = player_info_map.get(player_id, {})
+             player_name = player_info.get('fullName', f"ID: {player_id}")
+             primary_position_code = player_info.get('primaryPosition', {}).get('code', 'Unknown')
+             is_pitcher = primary_position_code in ['P', 'SP', 'RP']
+
+             stats_to_display = pitching_stats if is_pitcher else hitting_stats
+
+             # This section prints the individual player prediction output
+             print(f"\n{player_name} (ID: {player_id}, Pos: {primary_position_code}):")
+             for stat in stats_to_display:
+                 if stat in predicted_stats and predicted_stats[stat] is not None:
+                     if stat == 'strikeouts':
+                         formatted_stat_name = "Pitcher Strikeouts" if is_pitcher else "Hitter Strikeouts"
+                     else:
+                          formatted_stat_name = stat.replace('_weighted', '').replace('total_bases', 'Total Bases').replace('home_runs', 'Home Runs').replace('rbi', 'RBI').capitalize()
+                     print(f"  {formatted_stat_name}: {predicted_stats[stat]}")
+                 elif stat in predicted_stats:
+                      if stat == 'strikeouts':
+                         formatted_stat_name = "Pitcher Strikeouts" if is_pitcher else "Hitter Strikeouts"
+                      else:
+                          formatted_stat_name = stat.replace('_weighted', '').replace('total_bases', 'Total Bases').replace('home_runs', 'Home Runs').replace('rbi', 'RBI').capitalize()
+                      print(f"  {formatted_stat_name}: N/A (Model not trained or data issue)")
+
+             # Also append data to the list for the final DataFrame (optional, can be removed if only per-player output is desired)
+             player_prediction_data = {
+                 'Player Name': player_name,
+                 'Player ID': player_id,
+                 'Position': primary_position_code
+             }
+             for stat in stats_to_display:
+                 formatted_stat_name = "Pitcher Strikeouts" if (stat == 'strikeouts' and is_pitcher) else stat.replace('_weighted', '').replace('total_bases', 'Total Bases').replace('home_runs', 'Home Runs').replace('rbi', 'RBI').capitalize()
+                 player_prediction_data[formatted_stat_name] = predicted_stats.get(stat)
+
+             predicted_data.append(player_prediction_data)
+
+
+        time.sleep(0.05) # Small delay between player predictions
+
+    # Convert list of dictionaries to DataFrame and print the final summary (optional)
+    if predicted_data:
+        predictions_df = pd.DataFrame(predicted_data)
+        print("\n--- All Player Predictions Summary DataFrame ---")
+        # print(predictions_df.to_string()) # Uncomment this line if you want the final DataFrame summary
     else:
-        final_player_info_map[player_id] = all_player_info_map[player_id]
-    time.sleep(0.05) # Small delay
-
-# Use the comprehensive list of players for prediction
-player_ids_for_prediction = list(final_player_info_map.keys())
-player_info_map_for_prediction = final_player_info_map
-
-print(f"Attempting to predict for {len(player_ids_for_prediction)} players active in {year_minus_2}, {year_minus_1}, or {year_plus_0}.")
-
-for player_id in player_ids_for_prediction:
-    predicted_stats = predict_player_stats(player_id, trained_hitting_models, trained_pitching_models, api_hitting_stat_map, api_pitching_stat_map, hitting_stats, pitching_stats, player_info_map_for_prediction)
-    if predicted_stats:
-        player_info = player_info_map_for_prediction.get(player_id, {})
-        player_name = player_info.get('fullName', f"ID: {player_id}")
-        primary_position_code = player_info.get('primaryPosition', {}).get('code', 'Unknown')
-        is_pitcher = primary_position_code in ['P', 'SP', 'RP']
-
-        # Determine which stats to display based on position
-        stats_to_display = pitching_stats if is_pitcher else hitting_stats
-
-        print(f"\n{player_name} (ID: {player_id}, Pos: {primary_position_code}):")
-        for stat in stats_to_display:
-            if stat in predicted_stats and predicted_stats[stat] is not None:
-                # Format stat name for output, specifically for strikeouts
-                if stat == 'strikeouts':
-                    formatted_stat_name = "Pitcher Strikeouts" if is_pitcher else "Hitter Strikeouts"
-                else:
-                     formatted_stat_name = stat.replace('_weighted', '').replace('total_bases', 'Total Bases').replace('home_runs', 'Home Runs').replace('rbi', 'RBI').capitalize()
-                print(f"  {formatted_stat_name}: {predicted_stats[stat]}")
-            elif stat in predicted_stats:
-                 # Print stat name even if prediction is None (e.g., model not trained)
-                 if stat == 'strikeouts':
-                    formatted_stat_name = "Pitcher Strikeouts" if is_pitcher else "Hitter Strikeouts"
-                 else:
-                     formatted_stat_name = stat.replace('_weighted', '').replace('total_bases', 'Total Bases').replace('home_runs', 'Home Runs').replace('rbi', 'RBI').capitalize()
-                 print(f"  {formatted_stat_name}: N/A (Model not trained or data issue)")
+        print("No predictions were generated for any players.")
