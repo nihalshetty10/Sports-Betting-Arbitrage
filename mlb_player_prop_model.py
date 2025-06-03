@@ -540,16 +540,58 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
                 print(f"No model trained for {stat}. Skipping prediction.")
                 predictions[stat] = None
 
-        # Post-prediction adjustment for logical consistency:
-        # Ensure predicted total bases are at least equal to predicted hits for batters
-        if log_group == 'hitting' and 'hits' in predictions and 'total_bases' in predictions:
-            predicted_hits = predictions.get('hits', 0) # Get predicted hits, default to 0 if missing
-            predicted_total_bases = predictions.get('total_bases', 0) # Get predicted total bases, default to 0 if missing
+        # Post-prediction adjustments for logical consistency (Batting Stats):
+        if log_group == 'hitting':
+            predicted_hits = predictions.get('hits', 0)
+            predicted_total_bases = predictions.get('total_bases', 0)
+            predicted_home_runs = predictions.get('home_runs', 0)
+            predicted_rbi = predictions.get('rbi', 0)
 
-            # Ensure predicted total bases is not less than predicted hits
+            # Rule: If hits == 0 ⇒ total_bases must also be 0
+            if predicted_hits == 0:
+                if predicted_total_bases > 0:
+                    print(f"Adjusting predicted Total Bases for player {player_id} from {predicted_total_bases} to 0 (Hits is 0) for logical consistency.")
+                    predictions['total_bases'] = 0
+                    predicted_total_bases = 0 # Update for subsequent checks
+
+            # Rule: If home_runs > 0 ⇒ hits ≥ home_runs & total_bases ≥ 4 * home_runs
+            if predicted_home_runs > 0:
+                if predicted_hits < predicted_home_runs:
+                    print(f"Adjusting predicted Hits for player {player_id} from {predicted_hits} to {predicted_home_runs} (at least Home Runs) for logical consistency.")
+                    predictions['hits'] = predicted_home_runs
+                    predicted_hits = predicted_home_runs # Update for subsequent checks
+                if predicted_total_bases < 4 * predicted_home_runs:
+                    print(f"Adjusting predicted Total Bases for player {player_id} from {predicted_total_bases} to {4 * predicted_home_runs} (at least 4 * Home Runs) for logical consistency.")
+                    predictions['total_bases'] = 4 * predicted_home_runs
+                    predicted_total_bases = 4 * predicted_home_runs # Update for subsequent checks
+
+            # Rule: Total bases ≥ hits (General rule, applied after others might have adjusted hits/total_bases)
+            # Note: This rule is effectively covered by the other rules now, but kept for clarity
             if predicted_total_bases < predicted_hits:
-                print(f"Adjusting predicted Total Bases for player {player_id} from {predicted_total_bases} to {predicted_hits} (equal to Hits) for logical consistency.")
+                print(f"Adjusting predicted Total Bases for player {player_id} from {predicted_total_bases} to {predicted_hits} (at least Hits) for logical consistency.")
                 predictions['total_bases'] = predicted_hits
+                predicted_total_bases = predicted_hits # Update for subsequent checks
+
+            # Rule: Max bases from hits is 4 per hit (Total Bases <= 4 * Hits)
+            # This accounts for singles, doubles, triples, and home runs.
+            max_possible_bases_from_hits = predicted_hits * 4
+            if predicted_total_bases > max_possible_bases_from_hits:
+                 print(f"Adjusting predicted Total Bases for player {player_id} from {predicted_total_bases} to {max_possible_bases_from_hits} (max 4 bases per hit) for logical consistency.")
+                 predictions['total_bases'] = max_possible_bases_from_hits
+                 predicted_total_bases = max_possible_bases_from_hits # Update for subsequent checks
+
+            # Rule: If 1 hit and 4 total bases, must have at least 1 home run
+            if predicted_hits == 1 and predicted_total_bases == 4:
+                 if predicted_home_runs < 1:
+                      print(f"Adjusting predicted Home Runs for player {player_id} from {predicted_home_runs} to 1 (1 Hit and 4 Total Bases) for logical consistency.")
+                      predictions['home_runs'] = 1
+                      predicted_home_runs = 1 # Update for subsequent checks
+
+            # Rule: If home_run ≥ 1 ⇒ RBI ≥ 1
+            if predicted_home_runs >= 1:
+                if predicted_rbi < 1:
+                    print(f"Adjusting predicted RBI for player {player_id} from {predicted_rbi} to 1 (Home Run > 0) for logical consistency.")
+                    predictions['rbi'] = 1
 
         return predictions
 
@@ -559,63 +601,6 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
     except Exception as e:
         print(f"Error processing data for prediction for player {player_id}: {e}")
         return None
-
-# 6. Train models for each stat group and store them
-# Models are trained on 2023 and 2024 data (hitting_df_train, pitching_df_train)
-# This part runs when the script starts
-
-# Function to find player ID by name (simplified - may need refinement for exact matches)
-# def find_player_id_by_name(player_name, player_info_map):
-#     # This search can be slow for many players. Consider optimizing if needed.
-#     for player_id, info in player_info_map.items():
-#         if info.get('fullName', '').lower() == player_name.lower():
-#             return player_id
-#     return None
-
-# New function to run predictions for a list of player names
-# def run_predictions_for_players(player_names_list, player_info_map_comprehensive, trained_hitting_models, trained_pitching_models, api_hitting_stat_map, api_pitching_stat_map, hitting_stats, pitching_stats):
-#     print("\n--- Running Predictions for Specified Players ---")
-#     if not trained_hitting_models and not trained_pitching_models:
-#         print("No models were trained. Cannot run predictions.")
-#         return
-#
-#     for name in player_names_list:
-#         # Use the comprehensive map to find the player ID
-#         player_id = find_player_id_by_name(name, player_info_map_comprehensive)
-#         if player_id:
-#             # Call the existing prediction function for the found player ID
-#             predicted_stats = predict_player_stats(player_id, trained_hitting_models, trained_pitching_models, api_hitting_stat_map, api_pitching_stat_map, hitting_stats, pitching_stats, player_info_map_comprehensive)
-#             if predicted_stats:
-#                  player_info = player_info_map_comprehensive.get(player_id, {})
-#                  player_name = player_info.get('fullName', f"ID: {player_id}")
-#                  primary_position_code = player_info.get('primaryPosition', {}).get('code', 'Unknown')
-#                  is_pitcher = primary_position_code in ['P', 'SP', 'RP']
-#
-#                  stats_to_display = pitching_stats if is_pitcher else hitting_stats
-#
-#                  print(f"\n{player_name} (ID: {player_id}, Pos: {primary_position_code}):")
-#                  for stat in stats_to_display:
-#                      if stat in predicted_stats and predicted_stats[stat] is not None:
-#                          if stat == 'strikeouts':
-#                              formatted_stat_name = "Pitcher Strikeouts" if is_pitcher else "Hitter Strikeouts"
-#                          else:
-#                               formatted_stat_name = stat.replace('_weighted', '').replace('total_bases', 'Total Bases').replace('home_runs', 'Home Runs').replace('rbi', 'RBI').capitalize()
-#                          print(f"  {formatted_stat_name}: {predicted_stats[stat]}")
-#                      elif stat in predicted_stats:
-#                           if stat == 'strikeouts':
-#                              formatted_stat_name = "Pitcher Strikeouts" if is_pitcher else "Hitter Strikeouts"
-#                           else:
-#                               formatted_stat_name = stat.replace('_weighted', '').replace('total_bases', 'Total Bases').replace('home_runs', 'Home Runs').replace('rbi', 'RBI').capitalize()
-#                           print(f"  {formatted_stat_name}: N/A (Model not trained or data issue)")
-#
-#         else:
-#             print(f"\nCould not find player ID for name: {name}. Skipping prediction.")
-#     print("\n--- Finished Predictions ---")
-
-# Example usage (commented out - uncomment and replace with actual player names
-# from your scraper when ready):
-# players_from_scraper = ["Shohei Ohtani", "Ronald Acuna Jr.", "Gerrit Cole"]
-# run_predictions_for_players(players_from_scraper, player_info_map_comprehensive, trained_hitting_models, trained_pitching_models, api_hitting_stat_map, api_pitching_stat_map, hitting_stats, pitching_stats)
 
 # Run predictions for all players found
 print("\n--- Running Predictions for All Found Players ---")
