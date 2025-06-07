@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sports Betting Arbitrage</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: 'Inter', sans-serif;
+    }
+    body {
+      background-color: #0e0e0e;
+      color: #f5f5f5;
+      line-height: 1.6;
+    }
+    header {
+      padding: 2rem;
+      background: #1f1f1f;
+      text-align: center;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+    }
+    header h1 {
+      font-size: 2.5rem;
+      color: #00ffcc;
+    }
+    .container {
+      max-width: 900px;
+      margin: 3rem auto;
+      padding: 2rem;
+      background: #181818;
+      border-radius: 10px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    }
+    .container h2 {
+      color: #00ffcc;
+      margin-bottom: 1rem;
+    }
+    .container p, .container ul {
+      margin-bottom: 1rem;
+    }
+    .btn {
+      display: inline-block;
+      padding: 0.8rem 1.5rem;
+      background: #00ffcc;
+      color: #000;
+      font-weight: 600;
+      text-decoration: none;
+      border-radius: 6px;
+      margin-top: 1rem;
+    }
+    footer {
+      text-align: center;
+      padding: 2rem;
+      color: #888;
+    }
+    .odds-section {
+      background: #222;
+      padding: 1.5rem;
+      border-radius: 8px;
+      margin-top: 2rem;
+    }
+    .odds-section table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+    }
+    .odds-section th, .odds-section td {
+      padding: 0.75rem;
+      border: 1px solid #333;
+      text-align: left;
+    }
+    .odds-section th {
+      background-color: #2a2a2a;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Sports Betting Arbitrage</h1>
+    <p>Exploit value using PrizePicks odds vs player projections</p>
+  </header>
+
+  <section class="container">
+    <h2>About the Project</h2>
+    <p>This tool analyzes player projections and compares them against PrizePicks betting lines to identify profitable arbitrage opportunities. Built using Python, this project scrapes data, computes edge cases, and flags potential bets with positive expected value.</p>
+
+    <h2>How It Works</h2>
+    <ul>
+      <li>🧮 Scrapes live odds from PrizePicks</li>
+      <li>📊 Calculates player projections from historical data</li>
+      <li>💰 Flags arbitrage opportunities with positive EV</li>
+    </ul>
+
+    <a class="btn" href="https://github.com/nihalshetty10/Sports-Betting-Arbitrage" target="_blank">View on GitHub</a>
+
+    <section class="odds-section">
+      <h2>Live Odds & Predictions (MLB - Today)</h2>
+      <p>Below is a table comparing live PrizePicks odds to player projections. Categories include hits, total bases, home runs, RBIs, runs, hitter strikeouts, and pitcher strikeouts.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Player</th>
+            <th>Stat</th>
+            <th>Projection</th>
+            <th>PrizePicks Line</th>
+            <th>Edge</th>
+          </tr>
+        </thead>
+        <tbody id="odds-table-body">
+          <tr><td colspan="5">Loading data...</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </section>
+
+  <footer>
+    <p>© 2025 Nihal Shetty. All rights reserved.</p>
+  </footer>
+
+  <script>
+    // Simulated MLB data - replace with real API integration
+    const data = [
+      { player: "Aaron Judge", stat: "Home Runs", projection: 0.8, line: 0.5 },
+      { player: "Shohei Ohtani", stat: "Hits", projection: 1.6, line: 1.5 },
+      { player: "Mookie Betts", stat: "Total Bases", projection: 2.9, line: 2.0 },
+      { player: "Ronald Acuña Jr.", stat: "RBIs", projection: 1.1, line: 0.5 },
+      { player: "Juan Soto", stat: "Runs", projection: 1.4, line: 1.0 },
+      { player: "Mike Trout", stat: "Hitter Strikeouts", projection: 1.0, line: 1.5 },
+      { player: "Gerrit Cole", stat: "Pitcher Strikeouts", projection: 8.4, line: 7.0 }
+    ];
+
+    const tbody = document.getElementById("odds-table-body");
+    tbody.innerHTML = "";
+
+    data.forEach(row => {
+      const edge = (row.projection - row.line).toFixed(2);
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${row.player}</td>
+        <td>${row.stat}</td>
+        <td>${row.projection}</td>
+        <td>${row.line}</td>
+        <td style="color: ${edge >= 0.5 ? '#00ffcc' : '#fff'}">${edge}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  </script>
+</body>
+</html>
