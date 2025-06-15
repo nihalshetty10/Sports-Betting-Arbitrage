@@ -121,6 +121,11 @@ def scrape_prizepicks_props():
     with pd.option_context('display.max_rows', None):
         print(df)
 
+    # Save the DataFrame to a CSV file for the prediction model to read
+    output_csv_path = "scraped_prizepicks_props.csv"
+    df.to_csv(output_csv_path, index=False)
+    print(f"Scraped props saved to {output_csv_path}")
+
     return df[["player", "team", "opponent", "prop_type", "line", "odds"]]
 
 if __name__ == '__main__':
