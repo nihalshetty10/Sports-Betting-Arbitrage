@@ -115,21 +115,20 @@ for player_id in player_ids:
 player_info_map = updated_player_info_map # Update the main map
 
 # 2. Define stats relevant to hitting and pitching
-hitting_stats = ['runs', 'total_bases', 'hits', 'home_runs', 'rbi', 'strikeouts'] # Strikeouts as batter strikeouts
-pitching_stats = ['strikeouts'] # Strikeouts as pitcher strikeouts
+hitting_stats = ['runs', 'total_bases', 'hits', 'strikeouts'] # Strikeouts as batter strikeouts
+pitching_stats = ['strikeouts', 'earned_runs_allowed'] # Strikeouts as pitcher strikeouts, and Earned Runs Allowed
 
 # Mapping from our stat names to potential API field names
 api_hitting_stat_map = {
     'runs': 'runs',
     'total_bases': 'totalBases',
     'hits': 'hits',
-    'home_runs': 'homeRuns',
-    'rbi': 'rbi',
     'strikeouts': 'strikeOuts', # API key for batter strikeouts
 }
 
 api_pitching_stat_map = {
     'strikeouts': 'strikeOuts', # API key for pitcher strikeouts
+    'earned_runs_allowed': 'earnedRuns', # API key for earned runs allowed
 }
 
 # 3. Prepare data for TRAINING (using MLB Stats API game logs for 2023 and 2024)
@@ -544,8 +543,8 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
         if log_group == 'hitting':
             predicted_hits = predictions.get('hits', 0)
             predicted_total_bases = predictions.get('total_bases', 0)
-            predicted_home_runs = predictions.get('home_runs', 0)
-            predicted_rbi = predictions.get('rbi', 0)
+            # predicted_home_runs = predictions.get('home_runs', 0) # Home runs are no longer a predicted stat
+            # predicted_rbi = predictions.get('rbi', 0) # RBI are no longer a predicted stat
 
             # Rule: If hits == 0 ⇒ total_bases must also be 0
             if predicted_hits == 0:
@@ -553,17 +552,6 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
                     print(f"Adjusting predicted Total Bases for player {player_id} from {predicted_total_bases} to 0 (Hits is 0) for logical consistency.")
                     predictions['total_bases'] = 0
                     predicted_total_bases = 0 # Update for subsequent checks
-
-            # Rule: If home_runs > 0 ⇒ hits ≥ home_runs & total_bases ≥ 4 * home_runs
-            if predicted_home_runs > 0:
-                if predicted_hits < predicted_home_runs:
-                    print(f"Adjusting predicted Hits for player {player_id} from {predicted_hits} to {predicted_home_runs} (at least Home Runs) for logical consistency.")
-                    predictions['hits'] = predicted_home_runs
-                    predicted_hits = predicted_home_runs # Update for subsequent checks
-                if predicted_total_bases < 4 * predicted_home_runs:
-                    print(f"Adjusting predicted Total Bases for player {player_id} from {predicted_total_bases} to {4 * predicted_home_runs} (at least 4 * Home Runs) for logical consistency.")
-                    predictions['total_bases'] = 4 * predicted_home_runs
-                    predicted_total_bases = 4 * predicted_home_runs # Update for subsequent checks
 
             # Rule: Total bases ≥ hits (General rule, applied after others might have adjusted hits/total_bases)
             # Note: This rule is effectively covered by the other rules now, but kept for clarity
@@ -581,17 +569,19 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
                  predicted_total_bases = max_possible_bases_from_hits # Update for subsequent checks
 
             # Rule: If 1 hit and 4 total bases, must have at least 1 home run
-            if predicted_hits == 1 and predicted_total_bases == 4:
-                 if predicted_home_runs < 1:
-                      print(f"Adjusting predicted Home Runs for player {player_id} from {predicted_home_runs} to 1 (1 Hit and 4 Total Bases) for logical consistency.")
-                      predictions['home_runs'] = 1
-                      predicted_home_runs = 1 # Update for subsequent checks
+            # REMOVED: Home runs are no longer a predicted stat, and this rule implies predicting HR.
+            # if predicted_hits == 1 and predicted_total_bases == 4:
+            #      if predicted_home_runs < 1:
+            #           print(f"Adjusting predicted Home Runs for player {player_id} from {predicted_home_runs} to 1 (1 Hit and 4 Total Bases) for logical consistency.")
+            #           predictions['home_runs'] = 1
+            #           predicted_home_runs = 1 # Update for subsequent checks
 
             # Rule: If home_run ≥ 1 ⇒ RBI ≥ 1
-            if predicted_home_runs >= 1:
-                if predicted_rbi < 1:
-                    print(f"Adjusting predicted RBI for player {player_id} from {predicted_rbi} to 1 (Home Run > 0) for logical consistency.")
-                    predictions['rbi'] = 1
+            # REMOVED: RBI are no longer predicted.
+            # if predicted_home_runs >= 1:
+            #     if predicted_rbi < 1:
+            #         print(f"Adjusting predicted RBI for player {player_id} from {predicted_rbi} to 1 (Home Run > 0) for logical consistency.")
+            #         predictions['rbi'] = 1
 
         return predictions
 
@@ -635,14 +625,18 @@ else:
                  if stat in predicted_stats and predicted_stats[stat] is not None:
                      if stat == 'strikeouts':
                          formatted_stat_name = "Pitcher Strikeouts" if is_pitcher else "Hitter Strikeouts"
+                     elif stat == 'earned_runs_allowed':
+                         formatted_stat_name = "Earned Runs Allowed"
                      else:
-                          formatted_stat_name = stat.replace('_weighted', '').replace('total_bases', 'Total Bases').replace('home_runs', 'Home Runs').replace('rbi', 'RBI').capitalize()
+                          formatted_stat_name = stat.replace('_weighted', '').replace('total_bases', 'Total Bases').capitalize()
                      print(f"  {formatted_stat_name}: {predicted_stats[stat]}")
                  elif stat in predicted_stats:
                       if stat == 'strikeouts':
                          formatted_stat_name = "Pitcher Strikeouts" if is_pitcher else "Hitter Strikeouts"
+                      elif stat == 'earned_runs_allowed':
+                         formatted_stat_name = "Earned Runs Allowed"
                       else:
-                          formatted_stat_name = stat.replace('_weighted', '').replace('total_bases', 'Total Bases').replace('home_runs', 'Home Runs').replace('rbi', 'RBI').capitalize()
+                          formatted_stat_name = stat.replace('_weighted', '').replace('total_bases', 'Total Bases').capitalize()
                       print(f"  {formatted_stat_name}: N/A (Model not trained or data issue)")
 
              # Also append data to the list for the final DataFrame (optional, can be removed if only per-player output is desired)
@@ -652,7 +646,7 @@ else:
                  'Position': primary_position_code
              }
              for stat in stats_to_display:
-                 formatted_stat_name = "Pitcher Strikeouts" if (stat == 'strikeouts' and is_pitcher) else stat.replace('_weighted', '').replace('total_bases', 'Total Bases').replace('home_runs', 'Home Runs').replace('rbi', 'RBI').capitalize()
+                 formatted_stat_name = "Pitcher Strikeouts" if (stat == 'strikeouts' and is_pitcher) else stat.replace('_weighted', '').replace('total_bases', 'Total Bases').capitalize()
                  player_prediction_data[formatted_stat_name] = predicted_stats.get(stat)
 
              predicted_data.append(player_prediction_data)
@@ -667,3 +661,5 @@ else:
         # print(predictions_df.to_string()) # Uncomment this line if you want the final DataFrame summary
     else:
         print("No predictions were generated for any players.")
+
+print("\nScript finished.")
