@@ -792,8 +792,15 @@ if __name__ == '__main__':
         if predicted_props_data:
             final_predictions_df = pd.DataFrame(predicted_props_data)
             logging.info("--- Final Player Prop Predictions ---")
+            # Save to CSV instead of printing to console
+            output_csv_path = "predicted_player_props.csv"
+            final_predictions_df[['player', 'team', 'prop_type', 'predicted_value']].to_csv(output_csv_path, index=False)
+            logging.info(f"✅ Predictions saved to {output_csv_path}")
+            
+            # Also print to console as requested
             with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-                logging.info(f"\n{final_predictions_df[['player', 'team', 'prop_type', 'predicted_value']].to_string()}") # Use .to_string() for full DataFrame output with logging
+                logging.info(f"\n{final_predictions_df[['player', 'team', 'prop_type', 'predicted_value']].to_string()}")
+
         else:
             logging.info("No specific player prop predictions could be generated.")
 
