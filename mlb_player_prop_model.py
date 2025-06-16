@@ -9,6 +9,8 @@ import requests
 import time # Import time for rate limiting
 import datetime # Import datetime to get current year
 import numpy as np # Import numpy for nanmean and average
+import subprocess # Import subprocess to run the scraper
+import os # Import os for file path manipulation
 
 # Get current year dynamically
 current_year = datetime.datetime.now().year
@@ -403,7 +405,7 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
          # print(f"Skipping prediction for player {player_name}: Unknown position.")
          return None
 
-    print(f"\nGenerating prediction for {player_name} (ID: {player_id}, Pos: {primary_position_code})")
+    # print(f"\nGenerating prediction for {player_name} (ID: {player_id}, Pos: {primary_position_code})") # Removed for cleaner output
 
     try:
         all_logs = []
@@ -415,7 +417,7 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
             trained_models = trained_pitching_models
             # The feature for this stat is the single weighted feature
             feature_cols = [f'{stat}_weighted_feature' for stat in stats_to_process]
-            print(f"  -> Classified as Pitcher for prediction. Fetching {log_group} logs.")
+            # print(f"  -> Classified as Pitcher for prediction. Fetching {log_group} logs.") # Removed for cleaner output
         else:
             log_group = 'hitting'
             stats_to_process = hitting_stats
@@ -423,7 +425,7 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
             trained_models = trained_hitting_models
             # The feature for this stat is the single weighted feature
             feature_cols = [f'{stat}_weighted_feature' for stat in stats_to_process]
-            print(f"  -> Classified as Hitter for prediction. Fetching {log_group} logs.")
+            # print(f"  -> Classified as Hitter for prediction. Fetching {log_group} logs.") # Removed for cleaner output
 
         if not stats_to_process:
              print(f"No relevant stats defined for position {primary_position_code}. Skipping prediction.")
@@ -543,8 +545,6 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
         if log_group == 'hitting':
             predicted_hits = predictions.get('hits', 0)
             predicted_total_bases = predictions.get('total_bases', 0)
-            # predicted_home_runs = predictions.get('home_runs', 0) # Home runs are no longer a predicted stat
-            # predicted_rbi = predictions.get('rbi', 0) # RBI are no longer a predicted stat
 
             # Rule: If hits == 0 ⇒ total_bases must also be 0
             if predicted_hits == 0:
@@ -554,34 +554,17 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
                     predicted_total_bases = 0 # Update for subsequent checks
 
             # Rule: Total bases ≥ hits (General rule, applied after others might have adjusted hits/total_bases)
-            # Note: This rule is effectively covered by the other rules now, but kept for clarity
             if predicted_total_bases < predicted_hits:
                 print(f"Adjusting predicted Total Bases for player {player_id} from {predicted_total_bases} to {predicted_hits} (at least Hits) for logical consistency.")
                 predictions['total_bases'] = predicted_hits
                 predicted_total_bases = predicted_hits # Update for subsequent checks
 
             # Rule: Max bases from hits is 4 per hit (Total Bases <= 4 * Hits)
-            # This accounts for singles, doubles, triples, and home runs.
             max_possible_bases_from_hits = predicted_hits * 4
             if predicted_total_bases > max_possible_bases_from_hits:
                  print(f"Adjusting predicted Total Bases for player {player_id} from {predicted_total_bases} to {max_possible_bases_from_hits} (max 4 bases per hit) for logical consistency.")
                  predictions['total_bases'] = max_possible_bases_from_hits
                  predicted_total_bases = max_possible_bases_from_hits # Update for subsequent checks
-
-            # Rule: If 1 hit and 4 total bases, must have at least 1 home run
-            # REMOVED: Home runs are no longer a predicted stat, and this rule implies predicting HR.
-            # if predicted_hits == 1 and predicted_total_bases == 4:
-            #      if predicted_home_runs < 1:
-            #           print(f"Adjusting predicted Home Runs for player {player_id} from {predicted_home_runs} to 1 (1 Hit and 4 Total Bases) for logical consistency.")
-            #           predictions['home_runs'] = 1
-            #           predicted_home_runs = 1 # Update for subsequent checks
-
-            # Rule: If home_run ≥ 1 ⇒ RBI ≥ 1
-            # REMOVED: RBI are no longer predicted.
-            # if predicted_home_runs >= 1:
-            #     if predicted_rbi < 1:
-            #         print(f"Adjusting predicted RBI for player {player_id} from {predicted_rbi} to 1 (Home Run > 0) for logical consistency.")
-            #         predictions['rbi'] = 1
 
         return predictions
 
@@ -592,74 +575,135 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
         print(f"Error processing data for prediction for player {player_id}: {e}")
         return None
 
-# Run predictions for all players found
-print("\n--- Running Predictions for All Found Players ---")
-if not trained_hitting_models and not trained_pitching_models:
-    print("No models were trained. Cannot run predictions for all players.")
-else:
-    # Use player_info_map for all players found initially, as it has the most comprehensive list
-    # Filter out players with unknown positions if you only want to predict for known positions
-    # Or, if you want to try predicting for all and handle errors within predict_player_stats:
-    players_to_predict_ids = list(player_info_map.keys()) # Use keys from the map for full list
-    total_players_to_predict = len(players_to_predict_ids)
-    print(f"Attempting to predict for {total_players_to_predict} players.")
-
-    predicted_data = [] # To store predictions in a list
-
-    for i, player_id in enumerate(players_to_predict_ids):
-        print(f"Processing player {i+1}/{total_players_to_predict} (ID: {player_id})...")
-        # Pass the comprehensive map to the prediction function
-        predicted_stats = predict_player_stats(player_id, trained_hitting_models, trained_pitching_models, api_hitting_stat_map, api_pitching_stat_map, hitting_stats, pitching_stats, player_info_map)
-
-        if predicted_stats:
-             player_info = player_info_map.get(player_id, {})
-             player_name = player_info.get('fullName', f"ID: {player_id}")
-             primary_position_code = player_info.get('primaryPosition', {}).get('code', 'Unknown')
-             is_pitcher = primary_position_code in ['P', 'SP', 'RP']
-
-             stats_to_display = pitching_stats if is_pitcher else hitting_stats
-
-             # This section prints the individual player prediction output
-             print(f"\n{player_name} (ID: {player_id}, Pos: {primary_position_code}):")
-             for stat in stats_to_display:
-                 if stat in predicted_stats and predicted_stats[stat] is not None:
-                     if stat == 'strikeouts':
-                         formatted_stat_name = "Pitcher Strikeouts" if is_pitcher else "Hitter Strikeouts"
-                     elif stat == 'earned_runs_allowed':
-                         formatted_stat_name = "Earned Runs Allowed"
-                     else:
-                          formatted_stat_name = stat.replace('_weighted', '').replace('total_bases', 'Total Bases').capitalize()
-                     print(f"  {formatted_stat_name}: {predicted_stats[stat]}")
-                 elif stat in predicted_stats:
-                      if stat == 'strikeouts':
-                         formatted_stat_name = "Pitcher Strikeouts" if is_pitcher else "Hitter Strikeouts"
-                      elif stat == 'earned_runs_allowed':
-                         formatted_stat_name = "Earned Runs Allowed"
-                      else:
-                          formatted_stat_name = stat.replace('_weighted', '').replace('total_bases', 'Total Bases').capitalize()
-                      print(f"  {formatted_stat_name}: N/A (Model not trained or data issue)")
-
-             # Also append data to the list for the final DataFrame (optional, can be removed if only per-player output is desired)
-             player_prediction_data = {
-                 'Player Name': player_name,
-                 'Player ID': player_id,
-                 'Position': primary_position_code
-             }
-             for stat in stats_to_display:
-                 formatted_stat_name = "Pitcher Strikeouts" if (stat == 'strikeouts' and is_pitcher) else stat.replace('_weighted', '').replace('total_bases', 'Total Bases').capitalize()
-                 player_prediction_data[formatted_stat_name] = predicted_stats.get(stat)
-
-             predicted_data.append(player_prediction_data)
+# Function to find player ID by name (simplified - may need refinement for exact matches)
+def find_player_id_by_name(player_name, player_info_map):
+    # This search can be slow for many players. Consider optimizing if needed.
+    for player_id, info in player_info_map.items():
+        if info.get('fullName', '').lower() == player_name.lower():
+            return player_id
+    return None
 
 
-        time.sleep(0.05) # Small delay between player predictions
+# Main execution block to run the scraper and then predict props
+if __name__ == '__main__':
+    # prizepicks_scraper_path = "prizepicks_scraper.py" # No longer needed as we directly read the CSV
+    scraped_csv_path = "scraped_prizepicks_props.csv"
 
-    # Convert list of dictionaries to DataFrame and print the final summary (optional)
-    if predicted_data:
-        predictions_df = pd.DataFrame(predicted_data)
-        print("\n--- All Player Predictions Summary DataFrame ---")
-        # print(predictions_df.to_string()) # Uncomment this line if you want the final DataFrame summary
+    # print("\n--- Running PrizePicks Scraper ---") # No longer running scraper from here
+    try:
+        # Execute the scraper script (removed as per user request)
+        # result = subprocess.run(
+        #     ["python", prizepicks_scraper_path],
+        #     capture_output=True, text=True, check=True
+        # )
+        # print(result.stdout)
+        # if result.stderr:
+        #     print("Scraper Errors:\n", result.stderr)
+
+        # Directly read the CSV if it exists
+        if os.path.exists(scraped_csv_path):
+            scraped_props_df = pd.read_csv(scraped_csv_path)
+            print(f"Successfully loaded {len(scraped_props_df)} props from {scraped_csv_path}")
+        else:
+            print(f"❌ Scraped data CSV not found at {scraped_csv_path}. Please run prizepicks_scraper.py first to generate it.")
+            scraped_props_df = pd.DataFrame()
+
+    except Exception as e:
+        print(f"An unexpected error occurred while reading the scraped CSV: {e}")
+        scraped_props_df = pd.DataFrame()
+
+    if scraped_props_df.empty:
+        print("No props to predict. Exiting.")
     else:
-        print("No predictions were generated for any players.")
+        print("\n--- Training MLB Models ---")
+        # Train models (existing training logic runs here automatically upon script execution)
+
+        print("\n--- Generating Player Prop Predictions ---")
+        predicted_props_data = []
+
+        # Mapping for output stat names to internal stat names
+        prop_type_to_stat_name = {
+            "Hits": "hits",
+            "Total Bases": "total_bases",
+            "Runs": "runs",
+            "Pitcher Strikeouts": "strikeouts", # For pitchers
+            "Hitter Strikeouts": "strikeouts", # For hitters
+            "Earned Runs Allowed": "earned_runs_allowed"
+        }
+
+        for index, row in scraped_props_df.iterrows():
+            player_name = row['player']
+            prop_type = row['prop_type']
+            original_line = row['line']
+            original_odds = row['odds']
+            original_team = row['team']
+            original_opponent = row['opponent']
+
+            player_id = find_player_id_by_name(player_name, player_info_map)
+
+            if player_id:
+                # Get all predicted stats for the player
+                predicted_stats = predict_player_stats(player_id, trained_hitting_models, trained_pitching_models, api_hitting_stat_map, api_pitching_stat_map, hitting_stats, pitching_stats, player_info_map)
+
+                if predicted_stats and prop_type in prop_type_to_stat_name:
+                    internal_stat_name = prop_type_to_stat_name[prop_type]
+                    predicted_value = predicted_stats.get(internal_stat_name)
+
+                    # Special handling for strikeouts based on player position (hitter/pitcher)
+                    if internal_stat_name == "strikeouts":
+                        player_info = player_info_map.get(player_id, {})
+                        primary_position_code = player_info.get('primaryPosition', {}).get('code', 'Unknown')
+                        is_pitcher = primary_position_code in ['P', 'SP', 'RP']
+                        if is_pitcher and prop_type == "Pitcher Strikeouts":
+                            predicted_value = predicted_stats.get("strikeouts")
+                        elif not is_pitcher and prop_type == "Hitter Strikeouts":
+                            predicted_value = predicted_stats.get("strikeouts")
+                        else:
+                            # If prop_type doesn't match position, set to None or handle as an error
+                            predicted_value = None
+
+                    predicted_props_data.append({
+                        "player": player_name,
+                        "team": original_team,
+                        "opponent": original_opponent,
+                        "prop_type": prop_type,
+                        "line": original_line,
+                        "odds": original_odds,
+                        "predicted_value": predicted_value
+                    })
+                else:
+                    predicted_props_data.append({
+                        "player": player_name,
+                        "team": original_team,
+                        "opponent": original_opponent,
+                        "prop_type": prop_type,
+                        "line": original_line,
+                        "odds": original_odds,
+                        "predicted_value": None # No prediction or prop type mismatch
+                    })
+            else:
+                predicted_props_data.append({
+                    "player": player_name,
+                    "team": original_team,
+                    "opponent": original_opponent,
+                    "prop_type": prop_type,
+                    "line": original_line,
+                    "odds": original_odds,
+                    "predicted_value": None # Player ID not found
+                })
+
+        # Convert to DataFrame and display
+        if predicted_props_data:
+            final_predictions_df = pd.DataFrame(predicted_props_data)
+            print("\n--- Final Player Prop Predictions ---")
+            with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+                print(final_predictions_df[["player", "team", "prop_type", "predicted_value"]])
+        else:
+            print("No specific player prop predictions could be generated.")
+
+    # Clean up the scraped CSV file (removed as per user request)
+    # if os.path.exists(scraped_csv_path):
+    #     os.remove(scraped_csv_path)
+    #     print(f"Cleaned up temporary file: {scraped_csv_path}")
 
 print("\nScript finished.")
