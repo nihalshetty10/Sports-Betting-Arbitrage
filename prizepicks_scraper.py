@@ -1,10 +1,10 @@
-
 import pandas as pd
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
+import os
 
 # MLB props
 stat_categories = [
@@ -135,8 +135,12 @@ def scrape_prizepicks_props():
         print(df)
 
     df_output = df[["player", "team", "opponent", "prop_type", "line"]]
-    df_output.to_csv("mlb_prizepicks_props.csv", index=False)
-    print("📁 Output saved to 'mlb_prizepicks_props.csv'")
+    
+    # Save the DataFrame to a CSV file in the same directory as the script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    output_path = os.path.join(script_dir, "scraped_prizepicks_props.csv")
+    df_output.to_csv(output_path, index=False)
+    print(f"📁 Output saved to '{output_path}'")
 
     return df_output
 
