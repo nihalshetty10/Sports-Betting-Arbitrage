@@ -1,4 +1,4 @@
-#pip install pybaseball
+#pip install pybaseball unidecode thefuzz
 import pandas as pd
 import pybaseball
 from pybaseball import batting_stats, statcast_batter
@@ -12,9 +12,45 @@ import numpy as np # Import numpy for nanmean and average
 import subprocess # Import subprocess to run the scraper
 import os # Import os for file path manipulation
 import logging # Import logging
+from unidecode import unidecode # Import unidecode for name normalization
+from thefuzz import process # Import thefuzz for fuzzy matching
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Mapping of team abbreviations from scraped data to full team names from MLB API
+TEAM_ABBREVIATION_MAP = {
+    "ARI": "Arizona Diamondbacks", "AZ": "Arizona Diamondbacks",
+    "ATL": "Atlanta Braves",
+    "BAL": "Baltimore Orioles",
+    "BOS": "Boston Red Sox",
+    "CHC": "Chicago Cubs",
+    "CWS": "Chicago White Sox", "CHW": "Chicago White Sox",
+    "CIN": "Cincinnati Reds",
+    "CLE": "Cleveland Guardians",
+    "COL": "Colorado Rockies",
+    "DET": "Detroit Tigers",
+    "HOU": "Houston Astros",
+    "KC": "Kansas City Royals", "KCR": "Kansas City Royals",
+    "LAA": "Los Angeles Angels",
+    "LAD": "Los Angeles Dodgers",
+    "MIA": "Miami Marlins",
+    "MIL": "Milwaukee Brewers",
+    "MIN": "Minnesota Twins",
+    "NYM": "New York Mets",
+    "NYY": "New York Yankees",
+    "OAK": "Oakland Athletics",
+    "PHI": "Philadelphia Phillies",
+    "PIT": "Pittsburgh Pirates",
+    "SD": "San Diego Padres", "SDP": "San Diego Padres",
+    "SF": "San Francisco Giants", "SFG": "San Francisco Giants",
+    "SEA": "Seattle Mariners",
+    "STL": "St. Louis Cardinals",
+    "TB": "Tampa Bay Rays", "TBR": "Tampa Bay Rays",
+    "TEX": "Texas Rangers",
+    "TOR": "Toronto Blue Jays",
+    "WSH": "Washington Nationals", "WSN": "Washington Nationals",
+}
 
 # Get current year dynamically
 current_year = datetime.datetime.now().year
@@ -22,25 +58,28 @@ year_minus_1 = current_year - 1
 year_minus_2 = current_year - 2
 year_plus_0 = current_year # This will be 2025 if run in 2025
 
-# Function to get player details including primary position
+# Function to get player details including primary position and team
 def get_player_details(player_id):
-    details_url = f"https://statsapi.mlb.com/api/v1/people/{player_id}"
+    details_url = f"https://statsapi.mlb.com/api/v1/people/{player_id}?hydrate=currentTeam"
     try:
         response = requests.get(details_url)
         response.raise_for_status()
         details_data = response.json()
         if details_data and 'people' in details_data and len(details_data['people']) > 0:
             person_data = details_data['people'][0]
+            team_info = person_data.get('currentTeam', {})
             return {
                 'fullName': person_data.get('fullName', f'Player ID: {player_id}'),
-                'primaryPosition': person_data.get('primaryPosition', {})
+                'primaryPosition': person_data.get('primaryPosition', {}),
+                'teamName': team_info.get('name'),
+                'teamId': team_info.get('id')
             }
     except requests.exceptions.RequestException as e:
         logging.error(f"Error fetching details for player {player_id}: {e}")
     return None
 
 # 1. Get player list, names, and positions for the last two years (using MLB Stats API season stats)
-player_info_map = {} # Dictionary to store player info (name, position)
+player_info_map = {} # Dictionary to store player info (name, position, team)
 player_ids = set() # Use a set to store unique player IDs
 
 # Fetch initial player list from the last two *full* seasons for training data identification
@@ -101,21 +140,20 @@ except requests.exceptions.RequestException as e:
 player_ids = list(player_ids) # Convert set to list for iteration
 logging.info(f"Found {len(player_ids)} unique player IDs from {', '.join(map(str, training_years))} season stats for training.")
 
-# Attempt to enrich player info with position if missing
-logging.info("Attempting to enrich player position information...")
+# Attempt to enrich player info with position and team information...
+logging.info("Attempting to enrich player position and team information...")
 updated_player_info_map = {}
 for player_id in player_ids:
-    if player_id not in player_info_map or not player_info_map[player_id].get('primaryPosition', {}).get('type'):
-        # If position is missing from season stats, try fetching from player details endpoint
-        details = get_player_details(player_id)
-        if details:
-             updated_player_info_map[player_id] = details
-        else:
-             # Keep existing incomplete info or create a minimal entry
-             updated_player_info_map[player_id] = player_info_map.get(player_id, {'fullName': f'Player ID: {player_id}', 'primaryPosition': {}})
+    # Get details for every player to ensure team info is always present
+    details = get_player_details(player_id)
+    if details:
+         updated_player_info_map[player_id] = details
+    elif player_id in player_info_map:
+         # If details fetch fails, fall back to existing info from season stats
+         updated_player_info_map[player_id] = player_info_map[player_id]
     else:
-        # Keep existing complete info
-        updated_player_info_map[player_id] = player_info_map[player_id]
+         # If all else fails, create a minimal entry
+         updated_player_info_map[player_id] = {'fullName': f'Player ID: {player_id}', 'primaryPosition': {}}
     time.sleep(0.05) # Small delay for details API calls
 
 player_info_map = updated_player_info_map # Update the main map
@@ -509,7 +547,8 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
 
         if not all_logs:
             logging.info(f"No valid {log_group} game logs found for prediction for player {player_name} across {', '.join(map(str, prediction_years))}")
-            return None
+            # If no logs are found at all, predict 0 for all relevant stats
+            return {stat: 0 for stat in stats_to_process}
 
         logs = pd.concat(all_logs).dropna(subset=['game_date']) # Concatenate and drop rows without date
         logging.info(f"  Concatenated {log_group} logs for {player_name}, shape: {logs.shape}")
@@ -517,7 +556,8 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
         # Need at least one game to calculate features for prediction
         if logs.empty or len(logs) < 1:
              logging.info(f"Not enough {log_group} game logs ({len(logs)} found) for prediction for player {player_name} across {', '.join(map(str, prediction_years))}")
-             return None
+             # If not enough logs, predict 0 for all relevant stats
+             return {stat: 0 for stat in stats_to_process}
 
         logs['game_date'] = pd.to_datetime(logs['game_date'])
         logs = logs.sort_values('game_date').reset_index(drop=True)
@@ -592,7 +632,7 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
                 predictions[stat] = max(0, round(prediction)) # Predictions can't be negative
             else:
                 logging.info(f"No model trained for {stat}. Skipping prediction.")
-                predictions[stat] = None
+                predictions[stat] = 0 # Default to 0 if model not found for this stat
 
         # Post-prediction adjustments for logical consistency (Batting Stats):
         if log_group == 'hitting':
@@ -619,39 +659,68 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
                  predictions['total_bases'] = max_possible_bases_from_hits
                  predicted_total_bases = max_possible_bases_from_hits # Update for subsequent checks
 
-        return predictions
+        return "Success", predictions
 
     except requests.exceptions.RequestException as e:
         logging.error(f"Error fetching {log_group} game logs for prediction for player {player_name}: {e}")
-        return None
+        return "Prediction Error", None
     except Exception as e:
         logging.error(f"Error processing data for prediction for player {player_name}: {e}")
+        return "Prediction Error", None
+
+# Function to find player ID by name (now using team and fuzzy matching)
+def find_player_id_by_name(player_name, team_abbreviation, player_info_map, team_map):
+    """Finds the best player ID match using team and fuzzy name matching."""
+    player_name_norm = unidecode(player_name).lower()
+    target_team_name = team_map.get(team_abbreviation)
+    
+    possible_players = {}
+    search_scope_message = ""
+    team_search_failed = False
+
+    if target_team_name:
+        # Filter players by team first for a much more accurate search
+        possible_players = {
+            info['fullName']: pid
+            for pid, info in player_info_map.items()
+            if info.get('teamName') == target_team_name
+        }
+        search_scope_message = f"on team '{target_team_name}'"
+        if not possible_players:
+            team_search_failed = True
+    else:
+        team_search_failed = True
+
+    # If no players were found for the team, or if the team was unknown, search all players
+    if team_search_failed:
+        log_message = f"Could not find players for team abbreviation '{team_abbreviation}'." if team_abbreviation else "No team provided."
+        logging.warning(f"{log_message} Searching all players as a fallback.")
+        possible_players = {info['fullName']: pid for pid, info in player_info_map.items() if info.get('fullName')}
+        search_scope_message = "across all teams"
+
+    if not possible_players:
+        logging.error("Player info map is completely empty. Cannot find any player.")
         return None
 
-# Function to find player ID by name (simplified - may need refinement for exact matches)
-def find_player_id_by_name(player_name, player_info_map):
-    # This search can be slow for many players. Consider optimizing if needed.
-    player_name_lower = player_name.lower()
+    # Use fuzzy matching to find the best name match within the filtered list
+    # A score_cutoff of 85 is a good balance between finding matches and avoiding mismatches
+    best_match = process.extractOne(player_name_norm, possible_players.keys(), score_cutoff=85)
 
-    # Prioritize exact match
-    for player_id, info in player_info_map.items():
-        if info.get('fullName', '').lower() == player_name_lower:
-            return player_id
-
-    # Fallback to 'starts with' match for flexibility, but be cautious with common names
-    for player_id, info in player_info_map.items():
-        if info.get('fullName', '').lower().startswith(player_name_lower):
-            return player_id
-
-    return None
-
+    if best_match:
+        matched_name, score = best_match[0], best_match[1]
+        player_id = possible_players[matched_name]
+        logging.info(f"Fuzzy matched '{player_name}' with '{matched_name}' (Score: {score}) -> Player ID: {player_id}")
+        return player_id
+    else:
+        logging.warning(f"Could not find a confident match for '{player_name}' {search_scope_message}.")
+        return None
 
 # Main execution block to run the scraper and then predict props
 if __name__ == '__main__':
-    # prizepicks_scraper_path = "prizepicks_scraper.py" # No longer needed as we directly read the CSV
-    scraped_csv_path = "scraped_prizepicks_props.csv"
+    # Define path relative to the script to ensure it finds the file
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    scraped_csv_path = os.path.join(script_dir, "scraped_prizepicks_props.csv")
 
-    logging.info("--- Running PrizePicks Scraper ---") # No longer running scraper from here
     try:
         # Execute the scraper script (removed as per user request)
         # result = subprocess.run(
@@ -683,6 +752,9 @@ if __name__ == '__main__':
         logging.info("--- Generating Player Prop Predictions ---")
         predicted_props_data = []
 
+        # Get today's date for the output file
+        game_date = datetime.date.today().strftime("%Y-%m-%d")
+
         # Mapping for output stat names to internal stat names
         prop_type_to_stat_name = {
             "Hits": "hits",
@@ -697,110 +769,83 @@ if __name__ == '__main__':
             player_name = row['player']
             prop_type = row['prop_type']
             original_line = row['line']
-            original_odds = row['odds']
-            original_team = row['team']
+            original_team_field = row['team'] # e.g., 'BAL - C'
             original_opponent = row['opponent']
+            
+            predicted_value = 0.0 # Default to 0.0, ensures no NaN values
+            prediction_status = "Unknown Error" # Default status
+
+            # Attempt to parse team abbreviation
+            team_abbreviation = original_team_field.split(' - ')[0].strip()
 
             # Skip combined player props
             if '+' in player_name:
-                logging.info(f"Skipping combined player prop for: {player_name}")
-                predicted_props_data.append({
-                    "player": player_name,
-                    "team": original_team,
-                    "opponent": original_opponent,
-                    "prop_type": prop_type,
-                    "line": original_line,
-                    "odds": original_odds,
-                    "predicted_value": None # Skipped combined player
-                })
-                continue
-
-            player_id = find_player_id_by_name(player_name, player_info_map)
-
-            if player_id:
-                player_info_for_prediction = player_info_map.get(player_id, {})
-                player_pos_type = player_info_for_prediction.get('primaryPosition', {}).get('type', 'Unknown') # Changed to 'type'
-                logging.info(f"Processing {player_name} (ID: {player_id}, Pos: {player_pos_type}) for prop: {prop_type}") # Changed to 'type'
-
-                # Get all predicted stats for the player
-                predicted_stats = predict_player_stats(player_id, trained_hitting_models, trained_pitching_models, api_hitting_stat_map, api_pitching_stat_map, hitting_stats, pitching_stats, player_info_map)
-
-                if predicted_stats:
-                    logging.info(f"  All Predicted Stats for {player_name}: {predicted_stats}")
-                    if prop_type in prop_type_to_stat_name:
-                        internal_stat_name = prop_type_to_stat_name[prop_type]
-                        predicted_value = predicted_stats.get(internal_stat_name)
-
-                        # Special handling for strikeouts based on player position (hitter/pitcher)
-                        if internal_stat_name == "strikeouts":
-                            player_info = player_info_map.get(player_id, {})
-                            primary_position_type = player_info.get('primaryPosition', {}).get('type', 'Unknown') # Changed to 'type'
-                            is_pitcher = primary_position_type == 'Pitcher' # Changed to check 'Pitcher' type
-                            if is_pitcher and prop_type == "Pitcher Strikeouts":
-                                predicted_value = predicted_stats.get("strikeouts")
-                            elif not is_pitcher and prop_type == "Hitter Strikeouts":
-                                predicted_value = predicted_stats.get("strikeouts")
-                            else:
-                                # If prop_type doesn't match position, set to None or handle as an error
-                                logging.info(f"  Prop type '{prop_type}' for {player_name} (Pos: {primary_position_type}) does not match expected strikeout type. Setting predicted_value to None.") # Changed to 'type'
-                                predicted_value = None
-
-                        predicted_props_data.append({
-                            "player": player_name,
-                            "team": original_team,
-                            "opponent": original_opponent,
-                            "prop_type": prop_type,
-                            "line": original_line,
-                            "odds": original_odds,
-                            "predicted_value": predicted_value
-                        })
-                    else:
-                        logging.info(f"  Prop type '{prop_type}' not found in mapping for {player_name}. Setting predicted_value to None.")
-                        predicted_props_data.append({
-                            "player": player_name,
-                            "team": original_team,
-                            "opponent": original_opponent,
-                            "prop_type": prop_type,
-                            "line": original_line,
-                            "odds": original_odds,
-                            "predicted_value": None # Prop type not in mapping
-                        })
-                else:
-                    logging.info(f"  No predictions generated for {player_name} for prop: {prop_type}. Setting predicted_value to None.")
-                    predicted_props_data.append({
-                        "player": player_name,
-                        "team": original_team,
-                        "opponent": original_opponent,
-                        "prop_type": prop_type,
-                        "line": original_line,
-                        "odds": original_odds,
-                        "predicted_value": None # No predictions generated
-                    })
+                prediction_status = "Combined Player Prop"
             else:
-                logging.info(f"  Player ID not found for {player_name}. Setting predicted_value to None.")
-                predicted_props_data.append({
-                    "player": player_name,
-                    "team": original_team,
-                    "opponent": original_opponent,
-                    "prop_type": prop_type,
-                    "line": original_line,
-                    "odds": original_odds,
-                    "predicted_value": None # Player ID not found
-                })
+                player_id = find_player_id_by_name(player_name, team_abbreviation, player_info_map, TEAM_ABBREVIATION_MAP)
 
-        # Convert to DataFrame and display
+                if player_id:
+                    # Get all predicted stats for the player
+                    status, predicted_stats = predict_player_stats(player_id, trained_hitting_models, trained_pitching_models, api_hitting_stat_map, api_pitching_stat_map, hitting_stats, pitching_stats, player_info_map)
+                    prediction_status = status
+
+                    if predicted_stats:
+                        logging.info(f"  All Predicted Stats for {player_name}: {predicted_stats}")
+                        if prop_type in prop_type_to_stat_name:
+                            internal_stat_name = prop_type_to_stat_name[prop_type]
+                            retrieved_value = predicted_stats.get(internal_stat_name)
+
+                            # Special handling for strikeouts to ensure correct prop-position matching
+                            if internal_stat_name == "strikeouts":
+                                player_info = player_info_map.get(player_id, {})
+                                primary_position_type = player_info.get('primaryPosition', {}).get('type', 'Unknown')
+                                is_pitcher = primary_position_type == 'Pitcher'
+                                
+                                # Only assign value if the prop type matches the player's position
+                                if (is_pitcher and prop_type == "Pitcher Strikeouts") or \
+                                   (not is_pitcher and prop_type == "Hitter Strikeouts"):
+                                    if retrieved_value is not None:
+                                        predicted_value = retrieved_value
+                                else:
+                                    logging.info(f"  Prop type '{prop_type}' for {player_name} (Pos: {primary_position_type}) doesn't match. Using default prediction 0.")
+                                    prediction_status = "Prop Type Mismatch"
+                            
+                            elif retrieved_value is not None:
+                                predicted_value = retrieved_value
+                        else:
+                            logging.info(f"  Prop type '{prop_type}' not found in mapping for {player_name}. Using default prediction 0.")
+                            prediction_status = "Prop Not In Map"
+                else:
+                    prediction_status = "Player Not Found"
+
+            # Append the data once at the end of the loop with the determined predicted_value
+            predicted_props_data.append({
+                "date": game_date,
+                "player": player_name,
+                "team": original_team_field,
+                "opponent": original_opponent,
+                "prop_type": prop_type,
+                "line": original_line,
+                "predicted_value": predicted_value,
+                "prediction_status": prediction_status
+            })
+
+        # Convert to DataFrame and overwrite the original file
         if predicted_props_data:
             final_predictions_df = pd.DataFrame(predicted_props_data)
-            logging.info("--- Final Player Prop Predictions ---")
-            # Save to CSV instead of printing to console
-            output_csv_path = "predicted_player_props.csv"
-            final_predictions_df[['player', 'team', 'prop_type', 'predicted_value']].to_csv(output_csv_path, index=False)
-            logging.info(f"✅ Predictions saved to {output_csv_path}")
             
-            # Also print to console as requested
-            with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-                logging.info(f"\n{final_predictions_df[['player', 'team', 'prop_type', 'predicted_value']].to_string()}")
+            # Reorder columns to have date and status at the end
+            cols = ["date", "player", "team", "opponent", "prop_type", "line", "predicted_value", "prediction_status"]
+            final_predictions_df = final_predictions_df[cols]
 
+            # Overwrite the original scraper file with the updated data
+            final_predictions_df.to_csv(scraped_csv_path, index=False)
+            logging.info(f"✅ Updated predictions have been saved back to {scraped_csv_path}")
+
+            # Also print to console for confirmation
+            logging.info("--- Final Player Prop Predictions ---")
+            with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+                logging.info(f"\n{final_predictions_df.to_string()}")
         else:
             logging.info("No specific player prop predictions could be generated.")
 
