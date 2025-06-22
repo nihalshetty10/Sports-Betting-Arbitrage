@@ -1,7 +1,7 @@
-#pip install pybaseball unidecode thefuzz
+#pip install pybaseball, unidecode, thefuzz, baseball-id
 import pandas as pd
 import pybaseball
-from pybaseball import batting_stats, statcast_batter
+from pybaseball import batting_stats, statcast_batter, playerid_lookup, statcast_pitcher
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
@@ -14,6 +14,10 @@ import os # Import os for file path manipulation
 import logging # Import logging
 from unidecode import unidecode # Import unidecode for name normalization
 from thefuzz import process # Import thefuzz for fuzzy matching
+from baseball_id import Lookup # Import the baseball_id lookup tool
+import re
+from bs4 import BeautifulSoup
+import string
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -58,6 +62,53 @@ year_minus_1 = current_year - 1
 year_minus_2 = current_year - 2
 year_plus_0 = current_year # This will be 2025 if run in 2025
 
+# Load baseball-id master table at startup
+try:
+    BASEBALL_ID_MASTER = Lookup.master.copy()
+    BASEBALL_ID_MASTER['fullName'] = (
+        BASEBALL_ID_MASTER['mlb_name'].fillna('')
+        .apply(lambda x: unidecode(str(x)).strip())
+    )
+except Exception as e:
+    BASEBALL_ID_MASTER = None
+    logging.error(f"Could not load baseball-id master table: {e}")
+
+def get_all_br_players():
+    """
+    Scrape Baseball-Reference for all player names and their Baseball-Reference IDs.
+    Returns a list of (name, br_id) tuples.
+    """
+    base_url = 'https://www.baseball-reference.com/players/{}/'
+    players = []
+    for letter in string.ascii_lowercase:
+        url = base_url.format(letter)
+        res = requests.get(url)
+        if res.status_code != 200:
+            print(f"Failed to fetch {url}")
+            continue
+        soup = BeautifulSoup(res.text, 'html.parser')
+        for ul in soup.select('#div_players_ > ul'):
+            for item in ul.select('li > a'):
+                name = item.text
+                br_id = item['href'].split('/')[-1].replace('.shtml', '')
+                players.append((name, br_id))
+        time.sleep(1)  # Be polite to the server
+    return players
+
+def baseball_reference_lookup(player_name):
+    """
+    Looks up a player by name using Baseball-Reference scraping. Returns the BR ID if found, else None.
+    """
+    player_name_norm = unidecode(player_name).lower()
+    print(f"[BR SCRAPE] Attempting to scrape Baseball-Reference for '{player_name}'...")
+    br_players = get_all_br_players()
+    for name, br_id in br_players:
+        if unidecode(name).lower() == player_name_norm:
+            print(f"[BR SCRAPE] Found '{player_name}' on Baseball-Reference with BR ID: {br_id}")
+            return br_id
+    print(f"[BR SCRAPE] '{player_name}' not found on Baseball-Reference.")
+    return None
+
 # Function to get player details including primary position and team
 def get_player_details(player_id):
     details_url = f"https://statsapi.mlb.com/api/v1/people/{player_id}?hydrate=currentTeam"
@@ -78,85 +129,71 @@ def get_player_details(player_id):
         logging.error(f"Error fetching details for player {player_id}: {e}")
     return None
 
-# 1. Get player list, names, and positions for the last two years (using MLB Stats API season stats)
-player_info_map = {} # Dictionary to store player info (name, position, team)
-player_ids = set() # Use a set to store unique player IDs
+def _get_api_player_ids(years):
+    """Gets a set of player IDs from the MLB Stats API for given years."""
+    player_ids = set()
+    for group in ['hitting', 'pitching']:
+        for year in years:
+            try:
+                url = f"https://statsapi.mlb.com/api/v1/stats?stats=season&group={group}&season={year}"
+                response = requests.get(url)
+                response.raise_for_status()
+                data = response.json()
+                if data and 'stats' in data and len(data['stats']) > 0 and 'splits' in data['stats'][0]:
+                    for entry in data['stats'][0]['splits']:
+                        if entry.get('player') and 'id' in entry['player']:
+                            player_ids.add(entry['player']['id'])
+            except requests.exceptions.RequestException as e:
+                logging.error(f"Could not fetch {group} season stats for {year}: {e}")
+    logging.info(f"Found {len(player_ids)} unique player IDs from MLB API for years {years}.")
+    return player_ids
 
-# Fetch initial player list from the last two *full* seasons for training data identification
-training_years = [year_minus_1, year_minus_2, year_plus_0] # Include current year for player info
+def _get_statcast_player_ids(days=30):
+    """Gets a set of player IDs from Statcast data for the last X days."""
+    logging.info(f"Fetching player IDs from Statcast for the last {days} days... (This may take a moment)")
+    today = datetime.datetime.now()
+    start_date = (today - datetime.timedelta(days=days)).strftime('%Y-%m-%d')
+    end_date = today.strftime('%Y-%m-%d')
+    player_ids = set()
+    try:
+        hitters = statcast_batter(start_date, end_date)
+        if not hitters.empty:
+            player_ids.update(hitters['batter'].dropna().astype(int).unique())
+        pitchers = statcast_pitcher(start_date, end_date)
+        if not pitchers.empty:
+            player_ids.update(pitchers['pitcher'].dropna().astype(int).unique())
+    except Exception as e:
+        logging.error(f"Could not fetch Statcast data: {e}")
+    logging.info(f"Found {len(player_ids)} unique player IDs from recent Statcast data.")
+    return player_ids
 
-try:
-    # Fetch Hitting Season Stats for the last two full years
-    for year in training_years:
-        season_stats_url = f"https://statsapi.mlb.com/api/v1/stats?stats=season&group=hitting&season={year}"
-        logging.info(f"Fetching hitting season stats for {year} from: {season_stats_url}")
-        response = requests.get(season_stats_url)
-        response.raise_for_status()
-        season_stats_data = response.json()
+def build_master_player_map(api_years):
+    """Builds a comprehensive player map from multiple sources."""
+    logging.info("--- Building Master Player Database ---")
+    
+    # 1. Gather player IDs from all sources
+    api_ids = _get_api_player_ids(api_years)
+    statcast_ids = _get_statcast_player_ids()
+    all_ids = list(api_ids.union(statcast_ids))
+    logging.info(f"Found a total of {len(all_ids)} unique player IDs from all sources.")
+    
+    # 2. Enrich every player with full details
+    player_info_map = {}
+    logging.info("Enriching all players with details (name, team, position)...")
+    for i, player_id in enumerate(all_ids):
+        if i > 0 and i % 100 == 0:
+            logging.info(f"  ...processed {i} of {len(all_ids)} players.")
+        details = get_player_details(player_id)
+        if details:
+            player_info_map[player_id] = details
+        time.sleep(0.02) # Rate limiting
+        
+    logging.info("--- Master Player Database Build Complete ---")
+    return player_info_map
 
-        if season_stats_data and 'stats' in season_stats_data and len(season_stats_data['stats']) > 0 and 'splits' in season_stats_data['stats'][0]:
-            player_splits = season_stats_data['stats'][0]['splits']
-            logging.info(f"Found {len(player_splits)} hitting player entries (splits) in {year} season stats.")
-            for entry in player_splits:
-                player_info = entry.get('player')
-                if player_info and 'id' in player_info:
-                    player_id = player_info['id']
-                    # Store player name and position, prioritizing hitting position if available
-                    if player_id not in player_info_map or player_info_map[player_id].get('primaryPosition', {}).get('code') not in ['P', 'SP', 'RP']:
-                         player_info_map[player_id] = {
-                             'fullName': player_info.get('fullName', f'Player ID: {player_id}'),
-                             'primaryPosition': player_info.get('primaryPosition', {})
-                         }
-                    player_ids.add(player_id)
-
-    # Fetch Pitching Season Stats for the last two full years
-    for year in training_years:
-        season_stats_url = f"https://statsapi.mlb.com/api/v1/stats?stats=season&group=pitching&season={year}"
-        logging.info(f"Fetching pitching season stats for {year} from: {season_stats_url}")
-        response = requests.get(season_stats_url)
-        response.raise_for_status()
-        season_stats_data = response.json()
-
-        if season_stats_data and 'stats' in season_stats_data and len(season_stats_data['stats']) > 0 and 'splits' in season_stats_data['stats'][0]:
-            player_splits = season_stats_data['stats'][0]['splits']
-            logging.info(f"Found {len(player_splits)} pitching player entries (splits) in {year} season stats.")
-            for entry in player_splits:
-                player_info = entry.get('player')
-                if player_info and 'id' in player_info:
-                     player_id = player_info['id']
-                     # Store player name and position, prioritizing pitching position if available
-                     # This helps classify two-way players correctly if pitching is primary
-                     player_info_map[player_id] = {
-                          'fullName': player_info.get('fullName', f'Player ID: {player_id}'),
-                          'primaryPosition': player_info.get('primaryPosition', {})
-                     }
-                     player_ids.add(player_id)
-
-except requests.exceptions.RequestException as e:
-    logging.error(f"Error fetching season stats: {e}")
-    player_ids = set() # Reset to empty if fetching fails
-    player_info_map = {} # Reset mapping if fetching fails
-
-player_ids = list(player_ids) # Convert set to list for iteration
-logging.info(f"Found {len(player_ids)} unique player IDs from {', '.join(map(str, training_years))} season stats for training.")
-
-# Attempt to enrich player info with position and team information...
-logging.info("Attempting to enrich player position and team information...")
-updated_player_info_map = {}
-for player_id in player_ids:
-    # Get details for every player to ensure team info is always present
-    details = get_player_details(player_id)
-    if details:
-         updated_player_info_map[player_id] = details
-    elif player_id in player_info_map:
-         # If details fetch fails, fall back to existing info from season stats
-         updated_player_info_map[player_id] = player_info_map[player_id]
-    else:
-         # If all else fails, create a minimal entry
-         updated_player_info_map[player_id] = {'fullName': f'Player ID: {player_id}', 'primaryPosition': {}}
-    time.sleep(0.05) # Small delay for details API calls
-
-player_info_map = updated_player_info_map # Update the main map
+# 1. Build the master player database at the start
+training_years = [year_minus_1, year_minus_2, year_plus_0] # Define years for historical API search
+player_info_map = build_master_player_map(training_years)
 
 # 2. Define stats relevant to hitting and pitching
 hitting_stats = ['runs', 'total_bases', 'hits', 'strikeouts'] # Strikeouts as batter strikeouts
@@ -668,9 +705,8 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
         logging.error(f"Error processing data for prediction for player {player_name}: {e}")
         return "Prediction Error", None
 
-# Function to find player ID by name (now using team and fuzzy matching)
 def find_player_id_by_name(player_name, team_abbreviation, player_info_map, team_map):
-    """Finds the best player ID match using team and fuzzy name matching."""
+    """Finds the best player ID match using team and fuzzy name matching (Primary Search)."""
     player_name_norm = unidecode(player_name).lower()
     target_team_name = team_map.get(team_abbreviation)
     
@@ -694,25 +730,23 @@ def find_player_id_by_name(player_name, team_abbreviation, player_info_map, team
     # If no players were found for the team, or if the team was unknown, search all players
     if team_search_failed:
         log_message = f"Could not find players for team abbreviation '{team_abbreviation}'." if team_abbreviation else "No team provided."
-        logging.warning(f"{log_message} Searching all players as a fallback.")
+        logging.warning(f"{log_message} Searching all players as a fallback for primary search.")
         possible_players = {info['fullName']: pid for pid, info in player_info_map.items() if info.get('fullName')}
         search_scope_message = "across all teams"
 
     if not possible_players:
         logging.error("Player info map is completely empty. Cannot find any player.")
         return None
-
-    # Use fuzzy matching to find the best name match within the filtered list
-    # A score_cutoff of 85 is a good balance between finding matches and avoiding mismatches
+        
     best_match = process.extractOne(player_name_norm, possible_players.keys(), score_cutoff=85)
 
     if best_match:
         matched_name, score = best_match[0], best_match[1]
         player_id = possible_players[matched_name]
-        logging.info(f"Fuzzy matched '{player_name}' with '{matched_name}' (Score: {score}) -> Player ID: {player_id}")
+        logging.info(f"Primary search matched '{player_name}' with '{matched_name}' (Score: {score}) -> Player ID: {player_id}")
         return player_id
     else:
-        logging.warning(f"Could not find a confident match for '{player_name}' {search_scope_message}.")
+        logging.warning(f"Primary search could not find a confident match for '{player_name}' {search_scope_message}.")
         return None
 
 # Main execution block to run the scraper and then predict props
@@ -782,38 +816,55 @@ if __name__ == '__main__':
             if '+' in player_name:
                 prediction_status = "Combined Player Prop"
             else:
+                # --- Two-Stage Player Search ---
                 player_id = find_player_id_by_name(player_name, team_abbreviation, player_info_map, TEAM_ABBREVIATION_MAP)
+                prediction_status = "Success (Primary)"
 
+                # If primary search fails, use baseball-id fuzzy fallback
+                if not player_id:
+                    player_id = baseball_reference_lookup(player_name)
+                    if player_id:
+                        prediction_status = "Success (Fallback)"
+                
                 if player_id:
-                    # Get all predicted stats for the player
+                    # If fallback found a player, ensure their details are in our map before predicting
+                    if prediction_status == "Success (Fallback)" and player_id not in player_info_map:
+                        details = get_player_details(player_id)
+                        if details:
+                            player_info_map[player_id] = details
+                        else:
+                            # If we can't get details even with an ID, we cannot proceed
+                            player_id = None
+                            prediction_status = "Data Fetch Error"
+                
+                # --- Prediction Logic ---
+                if player_id:
                     status, predicted_stats = predict_player_stats(player_id, trained_hitting_models, trained_pitching_models, api_hitting_stat_map, api_pitching_stat_map, hitting_stats, pitching_stats, player_info_map)
-                    prediction_status = status
-
-                    if predicted_stats:
-                        logging.info(f"  All Predicted Stats for {player_name}: {predicted_stats}")
+                    
+                    # Overwrite status only if prediction itself fails
+                    if status != "Success" or not isinstance(predicted_stats, dict):
+                        prediction_status = status
+                        predicted_value = 0.0
+                    else:
                         if prop_type in prop_type_to_stat_name:
                             internal_stat_name = prop_type_to_stat_name[prop_type]
                             retrieved_value = predicted_stats.get(internal_stat_name)
 
-                            # Special handling for strikeouts to ensure correct prop-position matching
                             if internal_stat_name == "strikeouts":
                                 player_info = player_info_map.get(player_id, {})
                                 primary_position_type = player_info.get('primaryPosition', {}).get('type', 'Unknown')
                                 is_pitcher = primary_position_type == 'Pitcher'
                                 
-                                # Only assign value if the prop type matches the player's position
                                 if (is_pitcher and prop_type == "Pitcher Strikeouts") or \
                                    (not is_pitcher and prop_type == "Hitter Strikeouts"):
                                     if retrieved_value is not None:
                                         predicted_value = retrieved_value
                                 else:
-                                    logging.info(f"  Prop type '{prop_type}' for {player_name} (Pos: {primary_position_type}) doesn't match. Using default prediction 0.")
                                     prediction_status = "Prop Type Mismatch"
                             
                             elif retrieved_value is not None:
                                 predicted_value = retrieved_value
                         else:
-                            logging.info(f"  Prop type '{prop_type}' not found in mapping for {player_name}. Using default prediction 0.")
                             prediction_status = "Prop Not In Map"
                 else:
                     prediction_status = "Player Not Found"
@@ -849,9 +900,4 @@ if __name__ == '__main__':
         else:
             logging.info("No specific player prop predictions could be generated.")
 
-    # Clean up the scraped CSV file (removed as per user request)
-    # if os.path.exists(scraped_csv_path):
-    #     os.remove(scraped_csv_path)
-    #     logging.info(f"Cleaned up temporary file: {scraped_csv_path}")
-
-logging.info("\nScript finished.")
+    logging.info("\nScript finished.")
