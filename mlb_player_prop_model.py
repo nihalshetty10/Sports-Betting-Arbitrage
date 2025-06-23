@@ -19,6 +19,7 @@ import re
 from bs4 import BeautifulSoup
 import string
 import functools
+import urllib.error
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -708,7 +709,7 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
         return "Prediction Error", None
 
 def predict_stats_from_br(player_name, prop_type, trained_hitting_models, trained_pitching_models, hitting_stats, pitching_stats, team_abbr=None):
-    """Fallback prediction method using Baseball-Reference game logs, now with team roster lookup."""
+    """Fallback prediction method using Baseball-Reference game logs, now with team roster lookup and fuzzy matching."""
     logging.info(f"[BR Fallback] Attempting to predict stats for '{player_name}' using Baseball-Reference.")
 
     is_pitcher = prop_type in ["Pitcher Strikeouts", "Earned Runs Allowed"]
@@ -723,6 +724,7 @@ def predict_stats_from_br(player_name, prop_type, trained_hitting_models, traine
     }
 
     br_key = None
+    norm_name = unidecode(player_name).lower()
     # 1. Try fuzzy search first
     try:
         player_lookup_df = playerid_lookup(player_name.split()[-1], player_name.split()[0], fuzzy=True)
@@ -734,39 +736,66 @@ def predict_stats_from_br(player_name, prop_type, trained_hitting_models, traine
     except Exception as e:
         logging.error(f"[BR Fallback] Error looking up player '{player_name}': {e}")
 
-    # 2. If fuzzy search fails, use team roster mapping
+    # 2. If fuzzy search fails, use team roster mapping (with fuzzy fallback)
     if not br_key and team_abbr:
-        player_map = build_br_roster_player_map()
+        player_map, team_to_names, all_names = build_br_roster_player_map()
         abbr = team_abbr.strip().upper()
-        key = (unidecode(player_name).lower(), abbr)
+        key = (norm_name, abbr)
+        logging.info(f"[BR Fallback] Attempting exact roster lookup for key: {key}")
         br_key = player_map.get(key)
         if br_key:
             logging.info(f"[BR Fallback] Found BR key '{br_key}' for '{player_name}' on team '{abbr}' via roster scrape.")
         else:
-            logging.warning(f"[BR Fallback] Could not find '{player_name}' on team '{abbr}' in roster scrape.")
+            # Fuzzy match on team roster
+            team_names = team_to_names.get(abbr, [])
+            if team_names:
+                names_only = [n for n, _ in team_names]
+                best = process.extractOne(norm_name, names_only, score_cutoff=80)
+                logging.info(f"[BR Fallback] Fuzzy matching '{norm_name}' on team '{abbr}' roster: candidates={names_only}")
+                if best:
+                    idx = names_only.index(best[0])
+                    br_key = team_names[idx][1]
+                    logging.info(f"[BR Fallback] Fuzzy matched '{player_name}' to '{best[0]}' (score {best[1]}) on team '{abbr}'. BR key: {br_key}")
+            # Fuzzy match on all rosters
+            if not br_key:
+                all_names_only = [n for n, _, _ in all_names]
+                best = process.extractOne(norm_name, all_names_only, score_cutoff=80)
+                logging.info(f"[BR Fallback] Fuzzy matching '{norm_name}' on all rosters: candidates={all_names_only}")
+                if best:
+                    idx = all_names_only.index(best[0])
+                    br_key = all_names[idx][1]
+                    abbr = all_names[idx][2]
+                    logging.info(f"[BR Fallback] Fuzzy matched '{player_name}' to '{best[0]}' (score {best[1]}) on team '{abbr}'. BR key: {br_key}")
+        if not br_key:
+            logging.warning(f"[BR Fallback] Could not find '{player_name}' on team '{abbr}' in roster scrape (even with fuzzy match).")
 
     if not br_key:
+        logging.error(f"[BR Fallback] FINAL MISS: '{player_name}' (normalized: '{norm_name}') team_abbr: '{team_abbr}'")
         return "Player Not Found on BR", None
 
     all_logs = []
     for year in [year_minus_2, year_minus_1, year_plus_0]:
-        try:
-            url = f"https://www.baseball-reference.com/players/gl.fcgi?id={br_key}&t={player_type_code}&year={year}"
-            tables = pd.read_html(url)
-            df = next((tbl for tbl in tables if 'Date' in tbl.columns and 'Rk' in tbl.columns), None)
-
-            if df is None:
-                logging.info(f"[BR Fallback] No gamelog table found for {player_name} in {year}.")
-                continue
-
-            df.columns = df.columns.get_level_values(-1)
-            df = df[df['Rk'].ne('Rk')].dropna(subset=['Date'])
-            df['year'] = year
-            all_logs.append(df)
-            logging.info(f"[BR Fallback] Scraped {len(df)} game logs for {year}.")
-            time.sleep(1)
-        except Exception as e:
-            logging.warning(f"[BR Fallback] Could not scrape gamelogs for {year} for '{player_name}': {e}")
+        for attempt in range(3):  # Try up to 3 times
+            try:
+                url = f"https://www.baseball-reference.com/players/gl.fcgi?id={br_key}&t={player_type_code}&year={year}"
+                tables = pd.read_html(url)
+                df = next((tbl for tbl in tables if 'Date' in tbl.columns and 'Rk' in tbl.columns), None)
+                if df is not None:
+                    df.columns = df.columns.get_level_values(-1)
+                    df = df[df['Rk'].ne('Rk')].dropna(subset=['Date'])
+                    df['year'] = year
+                    all_logs.append(df)
+                    logging.info(f"[BR Fallback] Scraped {len(df)} game logs for {year}.")
+                time.sleep(5)  # Increase delay between requests
+                break  # Success, break retry loop
+            except Exception as e:
+                # Check for HTTP 429
+                if hasattr(e, 'code') and e.code == 429:
+                    logging.warning(f"[BR Fallback] 429 Too Many Requests for {player_name} {year}. Waiting before retry...")
+                    time.sleep(60)  # Wait a minute before retrying
+                else:
+                    logging.warning(f"[BR Fallback] Could not scrape gamelogs for {year} for '{player_name}': {e}")
+                    break
 
     if not all_logs:
         return "No Logs on BR", None
@@ -870,11 +899,13 @@ def get_br_team_abbrs():
 
 @functools.lru_cache(maxsize=1)
 def build_br_roster_player_map():
-    """Build a mapping from (player name, team abbr) to BR ID by scraping all team rosters."""
+    """Build a mapping from (player name, team abbr) to BR ID and a team->names mapping for fuzzy search."""
     teams = get_br_team_abbrs()
     player_map = {}
+    team_to_names = {}
     for abbr, info in teams.items():
         url = info['roster_url']
+        team_to_names[abbr] = []
         try:
             res = requests.get(url)
             soup = BeautifulSoup(res.text, 'html.parser')
@@ -883,10 +914,16 @@ def build_br_roster_player_map():
                 if link and '/players/' in link['href']:
                     player_name = link.text.strip()
                     br_id = link['href'].split('/')[-1].replace('.shtml', '')
-                    player_map[(unidecode(player_name).lower(), abbr)] = br_id
+                    norm_name = unidecode(player_name).lower()
+                    player_map[(norm_name, abbr)] = br_id
+                    team_to_names[abbr].append((norm_name, br_id))
         except Exception as e:
             logging.warning(f"Could not scrape roster for {abbr}: {e}")
-    return player_map
+    # Also build a global list for all rosters
+    all_names = []
+    for abbr, names in team_to_names.items():
+        all_names.extend([(n, br_id, abbr) for n, br_id in names])
+    return player_map, team_to_names, all_names
 
 # --- END Baseball-Reference Team Roster Scraping ---
 
