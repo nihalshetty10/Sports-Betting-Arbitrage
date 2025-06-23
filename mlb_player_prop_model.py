@@ -6,20 +6,20 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
 import requests
-import time # Import time for rate limiting
-import datetime # Import datetime to get current year
-import numpy as np # Import numpy for nanmean and average
-import subprocess # Import subprocess to run the scraper
-import os # Import os for file path manipulation
-import logging # Import logging
-from unidecode import unidecode # Import unidecode for name normalization
-from thefuzz import process # Import thefuzz for fuzzy matching
-from baseball_id import Lookup # Import the baseball_id lookup tool
+import time 
+import datetime 
+import numpy as np 
+import subprocess 
+import os 
+import logging
+from unidecode import unidecode 
+from thefuzz import process 
+from baseball_id import Lookup 
 import re
 from bs4 import BeautifulSoup
 import string
+import functools
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Mapping of team abbreviations from scraped data to full team names from MLB API
@@ -73,40 +73,40 @@ except Exception as e:
     BASEBALL_ID_MASTER = None
     logging.error(f"Could not load baseball-id master table: {e}")
 
-def get_all_br_players():
+def chadwick_player_lookup(player_name):
     """
-    Scrape Baseball-Reference for all player names and their Baseball-Reference IDs.
-    Returns a list of (name, br_id) tuples.
+    Looks up a player's MLB ID by name using the Chadwick Bureau data.
+    Returns the MLB ID if a confident match is found, else None.
     """
-    base_url = 'https://www.baseball-reference.com/players/{}/'
-    players = []
-    for letter in string.ascii_lowercase:
-        url = base_url.format(letter)
-        res = requests.get(url)
-        if res.status_code != 200:
-            print(f"Failed to fetch {url}")
-            continue
-        soup = BeautifulSoup(res.text, 'html.parser')
-        for ul in soup.select('#div_players_ > ul'):
-            for item in ul.select('li > a'):
-                name = item.text
-                br_id = item['href'].split('/')[-1].replace('.shtml', '')
-                players.append((name, br_id))
-        time.sleep(1)  # Be polite to the server
-    return players
+    if BASEBALL_ID_MASTER is None:
+        logging.warning("Chadwick Bureau master table not loaded, cannot perform player lookup.")
+        return None
 
-def baseball_reference_lookup(player_name):
-    """
-    Looks up a player by name using Baseball-Reference scraping. Returns the BR ID if found, else None.
-    """
-    player_name_norm = unidecode(player_name).lower()
-    print(f"[BR SCRAPE] Attempting to scrape Baseball-Reference for '{player_name}'...")
-    br_players = get_all_br_players()
-    for name, br_id in br_players:
-        if unidecode(name).lower() == player_name_norm:
-            print(f"[BR SCRAPE] Found '{player_name}' on Baseball-Reference with BR ID: {br_id}")
-            return br_id
-    print(f"[BR SCRAPE] '{player_name}' not found on Baseball-Reference.")
+    player_name_norm = unidecode(player_name).lower().strip()
+
+    # Use fuzzy matching to find the best match from the 'fullName' column
+    # The 'fullName' was created from 'mlb_name' at startup
+    choices = BASEBALL_ID_MASTER['fullName'].dropna().unique()
+    best_match = process.extractOne(player_name_norm, choices, score_cutoff=85)
+
+    if best_match:
+        matched_name, score = best_match
+        logging.info(f"[Chadwick] Fuzzy matched '{player_name}' with '{matched_name}' (Score: {score})")
+        
+        # Get the row for the matched player
+        player_rows = BASEBALL_ID_MASTER[BASEBALL_ID_MASTER['fullName'] == matched_name]
+        
+        if not player_rows.empty:
+            # Take the first match if multiple have the same name
+            player_id = player_rows.iloc[0]['mlb_id']
+            if pd.notna(player_id):
+                logging.info(f"[Chadwick] Found MLB ID: {int(player_id)}")
+                return int(player_id)
+            else:
+                logging.warning(f"[Chadwick] Matched player '{matched_name}' but they have no MLB ID.")
+                return None
+
+    logging.warning(f"[Chadwick] Could not find a confident match for '{player_name}'.")
     return None
 
 # Function to get player details including primary position and team
@@ -498,6 +498,52 @@ if not pitching_df_train.empty:
 else:
     logging.info("No pitching data available for training.")
 
+def calculate_prediction_features(historical_logs, stats_to_process, stat_map):
+    """Calculates weighted features from a DataFrame of historical game logs."""
+    features = {}
+    for stat_name in stats_to_process:
+        api_key = stat_map.get(stat_name)
+        if api_key and api_key in historical_logs.columns:
+            # Rolling 10-game average from the most recent season in historical logs
+            latest_year_in_logs = historical_logs['game_date'].dt.year.max()
+            if latest_year_in_logs:
+                latest_year_data = historical_logs[historical_logs['game_date'].dt.year == latest_year_in_logs][api_key]
+                rolling_10_logs = latest_year_data.rolling(window=10, min_periods=1).mean().iloc[-1] if not latest_year_data.empty else np.nan
+            else:
+                rolling_10_logs = np.nan
+
+            # Rolling 5-game average
+            rolling_5_avg = historical_logs[api_key].rolling(window=5, min_periods=1).mean().iloc[-1] if not historical_logs.empty else np.nan
+
+            # Rolling 3-game average
+            rolling_3_avg = historical_logs[api_key].rolling(window=3, min_periods=1).mean().iloc[-1] if not historical_logs.empty else np.nan
+
+            # Overall historical average
+            hist_avg = historical_logs[api_key].mean() if not historical_logs.empty else 0
+
+            # Combine recent averages using specified weights, ignoring NaN values
+            recent_averages_with_weights = []
+            if pd.notna(rolling_10_logs):
+                recent_averages_with_weights.append((rolling_10_logs, 0.25))
+            if pd.notna(rolling_5_avg):
+                recent_averages_with_weights.append((rolling_5_avg, 0.35))
+            if pd.notna(rolling_3_avg):
+                recent_averages_with_weights.append((rolling_3_avg, 0.4))
+
+            if recent_averages_with_weights:
+                averages = [item[0] for item in recent_averages_with_weights]
+                weights = [item[1] for item in recent_averages_with_weights]
+                normalized_weights = np.array(weights) / np.sum(weights)
+                recent_weighted_avg = np.average(averages, weights=normalized_weights)
+            else:
+                recent_weighted_avg = 0
+
+            # Create the final weighted feature
+            features[f"{stat_name}_weighted_feature"] = 0.75 * recent_weighted_avg + 0.25 * hist_avg
+        else:
+            features[f"{stat_name}_weighted_feature"] = 0
+    return features
+
 # 5. Create a prediction function
 def predict_player_stats(player_id, trained_hitting_models, trained_pitching_models, api_hitting_stat_map, api_pitching_stat_map, hitting_stats, pitching_stats, player_info_map):
     """Predicts the next game stats for a given player ID based on their position."""
@@ -603,51 +649,7 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
         historical_logs = logs.copy() # Use all logs as historical for prediction features
 
         # Calculate various historical features for prediction
-        features = {}
-        for stat_name, api_key in api_stat_map_current.items():
-            if api_key in historical_logs.columns:
-                # Rolling 10-game average from the most recent season in historical logs
-                latest_year_in_logs = historical_logs['game_date'].dt.year.max()
-                if latest_year_in_logs:
-                    # Filter for the latest year and then apply rolling mean
-                    latest_year_data = historical_logs[historical_logs['game_date'].dt.year == latest_year_in_logs][api_key]
-                    rolling_10_logs = latest_year_data.rolling(window=10).mean().iloc[-1] if len(latest_year_data) >= 10 else np.nan
-                else:
-                    rolling_10_logs = np.nan
-
-                # Rolling 5-game average (based on the last game in historical_logs)
-                rolling_5_avg = historical_logs[api_key].rolling(window=5).mean().iloc[-1] if len(historical_logs) >= 5 else np.nan
-
-                # Rolling 3-game average (based on the last game in historical_logs)
-                rolling_3_avg = historical_logs[api_key].rolling(window=3).mean().iloc[-1] if len(historical_logs) >= 3 else np.nan
-
-                # Overall historical average (based on all historical logs)
-                hist_avg = historical_logs[api_key].mean() if not historical_logs.empty else 0
-
-                # Combine recent averages using specified weights, ignoring NaN values
-                recent_averages_with_weights = []
-                if not np.isnan(rolling_10_logs):
-                     recent_averages_with_weights.append((rolling_10_logs, 0.25))
-                if not np.isnan(rolling_5_avg):
-                     recent_averages_with_weights.append((rolling_5_avg, 0.35))
-                if not np.isnan(rolling_3_avg):
-                     recent_averages_with_weights.append((rolling_3_avg, 0.4))
-
-                if recent_averages_with_weights:
-                      averages = [item[0] for item in recent_averages_with_weights]
-                      weights = [item[1] for item in recent_averages_with_weights]
-                      # Normalize weights if not all components are present
-                      normalized_weights = np.array(weights) / np.sum(weights)
-                      recent_weighted_avg = np.average(averages, weights=normalized_weights)
-                else:
-                      recent_weighted_avg = 0
-
-                # Create the final weighted feature (75% recent, 25% historical)
-                features[f"{stat_name}_weighted_feature"] = 0.75 * recent_weighted_avg + 0.25 * hist_avg
-
-            else:
-                 # Add the combined weighted feature with 0 if stat column doesn't exist
-                 features[f"{stat_name}_weighted_feature"] = 0
+        features = calculate_prediction_features(historical_logs, stats_to_process, api_stat_map_current)
 
         # Create a DataFrame for prediction
         X_predict = pd.DataFrame([features])
@@ -705,6 +707,104 @@ def predict_player_stats(player_id, trained_hitting_models, trained_pitching_mod
         logging.error(f"Error processing data for prediction for player {player_name}: {e}")
         return "Prediction Error", None
 
+def predict_stats_from_br(player_name, prop_type, trained_hitting_models, trained_pitching_models, hitting_stats, pitching_stats, team_abbr=None):
+    """Fallback prediction method using Baseball-Reference game logs, now with team roster lookup."""
+    logging.info(f"[BR Fallback] Attempting to predict stats for '{player_name}' using Baseball-Reference.")
+
+    is_pitcher = prop_type in ["Pitcher Strikeouts", "Earned Runs Allowed"]
+    player_type_code = 'p' if is_pitcher else 'b'
+    stats_to_process = pitching_stats if is_pitcher else hitting_stats
+    trained_models = trained_pitching_models if is_pitcher else trained_hitting_models
+    feature_cols = [f'{stat}_weighted_feature' for stat in stats_to_process]
+
+    br_stat_map = {
+        'hits': 'H', 'runs': 'R', 'total_bases': 'TB', 'strikeouts': 'SO',
+        'earned_runs_allowed': 'ER'
+    }
+
+    br_key = None
+    # 1. Try fuzzy search first
+    try:
+        player_lookup_df = playerid_lookup(player_name.split()[-1], player_name.split()[0], fuzzy=True)
+        if not player_lookup_df.empty:
+            player_lookup_df = player_lookup_df[player_lookup_df['mlb_played_last'].notna()].sort_values('mlb_played_last', ascending=False)
+            if not player_lookup_df.empty:
+                br_key = player_lookup_df.iloc[0]['key_bbref']
+                logging.info(f"[BR Fallback] Found BR key '{br_key}' for '{player_name}' via fuzzy search.")
+    except Exception as e:
+        logging.error(f"[BR Fallback] Error looking up player '{player_name}': {e}")
+
+    # 2. If fuzzy search fails, use team roster mapping
+    if not br_key and team_abbr:
+        player_map = build_br_roster_player_map()
+        abbr = team_abbr.strip().upper()
+        key = (unidecode(player_name).lower(), abbr)
+        br_key = player_map.get(key)
+        if br_key:
+            logging.info(f"[BR Fallback] Found BR key '{br_key}' for '{player_name}' on team '{abbr}' via roster scrape.")
+        else:
+            logging.warning(f"[BR Fallback] Could not find '{player_name}' on team '{abbr}' in roster scrape.")
+
+    if not br_key:
+        return "Player Not Found on BR", None
+
+    all_logs = []
+    for year in [year_minus_2, year_minus_1, year_plus_0]:
+        try:
+            url = f"https://www.baseball-reference.com/players/gl.fcgi?id={br_key}&t={player_type_code}&year={year}"
+            tables = pd.read_html(url)
+            df = next((tbl for tbl in tables if 'Date' in tbl.columns and 'Rk' in tbl.columns), None)
+
+            if df is None:
+                logging.info(f"[BR Fallback] No gamelog table found for {player_name} in {year}.")
+                continue
+
+            df.columns = df.columns.get_level_values(-1)
+            df = df[df['Rk'].ne('Rk')].dropna(subset=['Date'])
+            df['year'] = year
+            all_logs.append(df)
+            logging.info(f"[BR Fallback] Scraped {len(df)} game logs for {year}.")
+            time.sleep(1)
+        except Exception as e:
+            logging.warning(f"[BR Fallback] Could not scrape gamelogs for {year} for '{player_name}': {e}")
+
+    if not all_logs:
+        return "No Logs on BR", None
+
+    logs = pd.concat(all_logs)
+    for stat, col in br_stat_map.items():
+        if col in logs.columns:
+            logs[col] = pd.to_numeric(logs[col], errors='coerce').fillna(0)
+
+    def process_br_date(row):
+        date_str = str(row['Date']).split('(')[0].strip()
+        year_str = str(row['year'])
+        if year_str in date_str:
+            return pd.to_datetime(date_str, errors='coerce')
+        else:
+            return pd.to_datetime(f"{year_str} {date_str}", errors='coerce')
+
+    logs['game_date'] = logs.apply(process_br_date, axis=1)
+    logs.dropna(subset=['game_date'], inplace=True)
+    logs = logs.sort_values('game_date').reset_index(drop=True)
+
+    if logs.empty:
+        return "No Logs on BR after date parsing", None
+
+    features = calculate_prediction_features(logs, stats_to_process, br_stat_map)
+    X_predict = pd.DataFrame([features]).reindex(columns=feature_cols, fill_value=0)
+
+    predictions = {}
+    for stat in stats_to_process:
+        if stat in trained_models:
+            model = trained_models[stat]
+            prediction = model.predict(X_predict[[f'{stat}_weighted_feature']])[0]
+            predictions[stat] = max(0, round(prediction, 2))
+        else:
+            predictions[stat] = 0
+    
+    return "Success from BR", predictions
+
 def find_player_id_by_name(player_name, team_abbreviation, player_info_map, team_map):
     """Finds the best player ID match using team and fuzzy name matching (Primary Search)."""
     player_name_norm = unidecode(player_name).lower()
@@ -748,6 +848,47 @@ def find_player_id_by_name(player_name, team_abbreviation, player_info_map, team
     else:
         logging.warning(f"Primary search could not find a confident match for '{player_name}' {search_scope_message}.")
         return None
+
+# --- Baseball-Reference Team Roster Scraping ---
+BR_TEAMS_URL = "https://www.baseball-reference.com/teams/"
+
+def get_br_team_abbrs():
+    """Scrape Baseball-Reference teams page to get all current MLB team abbreviations and their roster URLs."""
+    res = requests.get(BR_TEAMS_URL)
+    soup = BeautifulSoup(res.text, 'html.parser')
+    teams = {}
+    for row in soup.select('table#teams_active tbody tr'):  # Only active teams
+        link = row.find('a')
+        if link and '/teams/' in link['href']:
+            abbr = link['href'].split('/')[2]
+            team_name = link.text.strip()
+            teams[abbr] = {
+                'name': team_name,
+                'roster_url': f"https://www.baseball-reference.com/teams/{abbr}/2024-roster.shtml"
+            }
+    return teams
+
+@functools.lru_cache(maxsize=1)
+def build_br_roster_player_map():
+    """Build a mapping from (player name, team abbr) to BR ID by scraping all team rosters."""
+    teams = get_br_team_abbrs()
+    player_map = {}
+    for abbr, info in teams.items():
+        url = info['roster_url']
+        try:
+            res = requests.get(url)
+            soup = BeautifulSoup(res.text, 'html.parser')
+            for row in soup.select('table#team_roster tbody tr'):
+                link = row.find('a')
+                if link and '/players/' in link['href']:
+                    player_name = link.text.strip()
+                    br_id = link['href'].split('/')[-1].replace('.shtml', '')
+                    player_map[(unidecode(player_name).lower(), abbr)] = br_id
+        except Exception as e:
+            logging.warning(f"Could not scrape roster for {abbr}: {e}")
+    return player_map
+
+# --- END Baseball-Reference Team Roster Scraping ---
 
 # Main execution block to run the scraper and then predict props
 if __name__ == '__main__':
@@ -803,7 +944,7 @@ if __name__ == '__main__':
             player_name = row['player']
             prop_type = row['prop_type']
             original_line = row['line']
-            original_team_field = row['team'] # e.g., 'BAL - C'
+            original_team_field = row['team']
             original_opponent = row['opponent']
             
             predicted_value = 0.0 # Default to 0.0, ensures no NaN values
@@ -816,60 +957,51 @@ if __name__ == '__main__':
             if '+' in player_name:
                 prediction_status = "Combined Player Prop"
             else:
-                # --- Two-Stage Player Search ---
+                # --- Stage 1: Try MLB API ---
                 player_id = find_player_id_by_name(player_name, team_abbreviation, player_info_map, TEAM_ABBREVIATION_MAP)
-                prediction_status = "Success (Primary)"
+                prediction_made = False
 
-                # If primary search fails, use baseball-id fuzzy fallback
-                if not player_id:
-                    player_id = baseball_reference_lookup(player_name)
-                    if player_id:
-                        prediction_status = "Success (Fallback)"
-                
                 if player_id:
-                    # If fallback found a player, ensure their details are in our map before predicting
-                    if prediction_status == "Success (Fallback)" and player_id not in player_info_map:
+                    # Ensure player details are in the map before predicting
+                    if player_id not in player_info_map:
                         details = get_player_details(player_id)
                         if details:
                             player_info_map[player_id] = details
                         else:
-                            # If we can't get details even with an ID, we cannot proceed
-                            player_id = None
-                            prediction_status = "Data Fetch Error"
-                
-                # --- Prediction Logic ---
+                            player_id = None # Cannot proceed if details are not fetchable
+
                 if player_id:
                     status, predicted_stats = predict_player_stats(player_id, trained_hitting_models, trained_pitching_models, api_hitting_stat_map, api_pitching_stat_map, hitting_stats, pitching_stats, player_info_map)
                     
-                    # Overwrite status only if prediction itself fails
-                    if status != "Success" or not isinstance(predicted_stats, dict):
-                        prediction_status = status
-                        predicted_value = 0.0
-                    else:
-                        if prop_type in prop_type_to_stat_name:
-                            internal_stat_name = prop_type_to_stat_name[prop_type]
-                            retrieved_value = predicted_stats.get(internal_stat_name)
-
-                            if internal_stat_name == "strikeouts":
-                                player_info = player_info_map.get(player_id, {})
-                                primary_position_type = player_info.get('primaryPosition', {}).get('type', 'Unknown')
-                                is_pitcher = primary_position_type == 'Pitcher'
-                                
-                                if (is_pitcher and prop_type == "Pitcher Strikeouts") or \
-                                   (not is_pitcher and prop_type == "Hitter Strikeouts"):
-                                    if retrieved_value is not None:
-                                        predicted_value = retrieved_value
-                                else:
-                                    prediction_status = "Prop Type Mismatch"
-                            
-                            elif retrieved_value is not None:
-                                predicted_value = retrieved_value
+                    if status == "Success" and isinstance(predicted_stats, dict):
+                        prediction_status = "Success (API)"
+                        prediction_made = True
+                        # Extract the predicted value for the specific prop
+                        internal_stat_name = prop_type_to_stat_name.get(prop_type)
+                        if internal_stat_name:
+                            predicted_value = predicted_stats.get(internal_stat_name, 0.0)
                         else:
                             prediction_status = "Prop Not In Map"
-                else:
-                    prediction_status = "Player Not Found"
+                    else:
+                        logging.warning(f"MLB API prediction failed for {player_name} with status '{status}'. Falling back to BR.")
+                
+                # --- Stage 2: Fallback to Baseball-Reference ---
+                if not prediction_made:
+                    br_status, br_predictions = predict_stats_from_br(player_name, prop_type, trained_hitting_models, trained_pitching_models, hitting_stats, pitching_stats, team_abbreviation)
 
-            # Append the data once at the end of the loop with the determined predicted_value
+                    if br_status == "Success from BR" and isinstance(br_predictions, dict):
+                        prediction_status = br_status
+                        # Extract the predicted value for the specific prop
+                        internal_stat_name = prop_type_to_stat_name.get(prop_type)
+                        if internal_stat_name:
+                            predicted_value = br_predictions.get(internal_stat_name, 0.0)
+                        else:
+                            prediction_status = "Prop Not In Map"
+                    else:
+                        # If both API and BR fail, mark as not found
+                        prediction_status = f"Player Not Found ({br_status})"
+
+            # Append the data once at the end of the loop
             predicted_props_data.append({
                 "date": game_date,
                 "player": player_name,
