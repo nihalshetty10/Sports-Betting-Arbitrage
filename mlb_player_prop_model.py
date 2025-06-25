@@ -927,6 +927,18 @@ def build_br_roster_player_map():
 
 # --- END Baseball-Reference Team Roster Scraping ---
 
+def save_br_scrape_results(results, output_path=None):
+    """Save a list of dicts (BR fallback logs/results) to a CSV file in the project root."""
+    if output_path is None:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_path = os.path.join(script_dir, "br_scrape_results.csv")
+    if results:
+        df = pd.DataFrame(results)
+        df.to_csv(output_path, index=False)
+        logging.info(f"[BR Fallback] Saved BR scrape results to {output_path}")
+    else:
+        logging.info("[BR Fallback] No BR scrape results to save.")
+
 # Main execution block to run the scraper and then predict props
 if __name__ == '__main__':
     # Define path relative to the script to ensure it finds the file
@@ -976,6 +988,8 @@ if __name__ == '__main__':
             "Hitter Strikeouts": "strikeouts", # For hitters
             "Earned Runs Allowed": "earned_runs_allowed"
         }
+
+        br_scrape_results = []
 
         for index, row in scraped_props_df.iterrows():
             player_name = row['player']
@@ -1037,6 +1051,14 @@ if __name__ == '__main__':
                     else:
                         # If both API and BR fail, mark as not found
                         prediction_status = f"Player Not Found ({br_status})"
+                    # Save BR fallback attempt
+                    br_scrape_results.append({
+                        "player": player_name,
+                        "team": team_abbreviation,
+                        "prop_type": prop_type,
+                        "status": br_status,
+                        "predicted_value": predicted_value
+                    })
 
             # Append the data once at the end of the loop
             predicted_props_data.append({
@@ -1062,11 +1084,35 @@ if __name__ == '__main__':
             final_predictions_df.to_csv(scraped_csv_path, index=False)
             logging.info(f"✅ Updated predictions have been saved back to {scraped_csv_path}")
 
+            # Add residual column (prediction - actual)
+            final_predictions_df['residual'] = final_predictions_df['predicted_value'] - final_predictions_df['line']
+
+            # Calculate rolling std per prop_type and set prediction column
+            final_predictions_df['rolling_sd'] = np.nan
+            final_predictions_df['prediction'] = np.nan
+            for prop in final_predictions_df['prop_type'].unique():
+                mask = final_predictions_df['prop_type'] == prop
+                # Rolling std of residual, window=10, min_periods=3
+                rolling_std = final_predictions_df.loc[mask, 'residual'].rolling(window=10, min_periods=3).std()
+                final_predictions_df.loc[mask, 'rolling_sd'] = rolling_std.values
+                # Set prediction: normalized if rolling_sd is not NaN, else raw predicted_value
+                pred = final_predictions_df.loc[mask, 'predicted_value'] / rolling_std
+                # Where rolling_sd is NaN, use predicted_value
+                pred = pred.where(~rolling_std.isna(), final_predictions_df.loc[mask, 'predicted_value'])
+                final_predictions_df.loc[mask, 'prediction'] = pred.values
+
+            # Save with new columns as well
+            final_predictions_df.to_csv(scraped_csv_path, index=False)
+            final_predictions_df.to_csv('mlb_predictions_with_analytics.csv', index=False)
+
             # Also print to console for confirmation
             logging.info("--- Final Player Prop Predictions ---")
             with pd.option_context('display.max_rows', None, 'display.max_columns', None):
                 logging.info(f"\n{final_predictions_df.to_string()}")
         else:
             logging.info("No specific player prop predictions could be generated.")
+
+        # After all predictions:
+        save_br_scrape_results(br_scrape_results)
 
     logging.info("\nScript finished.")
