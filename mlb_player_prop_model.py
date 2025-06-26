@@ -939,6 +939,14 @@ def save_br_scrape_results(results, output_path=None):
     else:
         logging.info("[BR Fallback] No BR scrape results to save.")
 
+def save_all_player_prop_results(df, output_path=None):
+    """Save the full DataFrame of all player prop results to a CSV file in the project root."""
+    if output_path is None:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_path = os.path.join(script_dir, "all_player_prop_results.csv")
+    df.to_csv(output_path, index=False)
+    logging.info(f"[All Player Props] Saved all player prop results to {output_path}")
+
 # Main execution block to run the scraper and then predict props
 if __name__ == '__main__':
     # Define path relative to the script to ensure it finds the file
@@ -1087,23 +1095,21 @@ if __name__ == '__main__':
             # Add residual column (prediction - actual)
             final_predictions_df['residual'] = final_predictions_df['predicted_value'] - final_predictions_df['line']
 
-            # Calculate rolling std per prop_type and set prediction column
-            final_predictions_df['rolling_sd'] = np.nan
-            final_predictions_df['prediction'] = np.nan
-            for prop in final_predictions_df['prop_type'].unique():
-                mask = final_predictions_df['prop_type'] == prop
-                # Rolling std of residual, window=10, min_periods=3
-                rolling_std = final_predictions_df.loc[mask, 'residual'].rolling(window=10, min_periods=3).std()
-                final_predictions_df.loc[mask, 'rolling_sd'] = rolling_std.values
-                # Set prediction: normalized if rolling_sd is not NaN, else raw predicted_value
-                pred = final_predictions_df.loc[mask, 'predicted_value'] / rolling_std
-                # Where rolling_sd is NaN, use predicted_value
-                pred = pred.where(~rolling_std.isna(), final_predictions_df.loc[mask, 'predicted_value'])
-                final_predictions_df.loc[mask, 'prediction'] = pred.values
+            # Calculate rolling std per player+prop_type and set prediction column
+            player_prop_sd = final_predictions_df.groupby(['player', 'prop_type'])['residual'].transform(lambda x: x.std(ddof=0)).fillna(0)
+            final_predictions_df['player_prop_sd'] = player_prop_sd
+            # Set prediction: normalized if player_prop_sd > 0, else raw predicted_value
+            pred = final_predictions_df['predicted_value'] / final_predictions_df['player_prop_sd']
+            final_predictions_df['prediction'] = pred.where(final_predictions_df['player_prop_sd'] > 0, final_predictions_df['predicted_value'])
+            # Remove rolling_sd column if it exists
+            if 'rolling_sd' in final_predictions_df.columns:
+                final_predictions_df.drop(columns=['rolling_sd'], inplace=True)
 
             # Save with new columns as well
             final_predictions_df.to_csv(scraped_csv_path, index=False)
             final_predictions_df.to_csv('mlb_predictions_with_analytics.csv', index=False)
+            # Also save all player prop results for sidebar visibility
+            save_all_player_prop_results(final_predictions_df)
 
             # Also print to console for confirmation
             logging.info("--- Final Player Prop Predictions ---")
