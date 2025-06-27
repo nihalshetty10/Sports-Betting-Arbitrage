@@ -1088,22 +1088,125 @@ if __name__ == '__main__':
             cols = ["date", "player", "team", "opponent", "prop_type", "line", "predicted_value", "prediction_status"]
             final_predictions_df = final_predictions_df[cols]
 
+            # Remove unnecessary columns before saving
+            cols_to_drop = []
+            if 'residual' in final_predictions_df.columns:
+                cols_to_drop.append('residual')
+            if 'player_prop_sd' in final_predictions_df.columns:
+                cols_to_drop.append('player_prop_sd')
+            # Remove either 'prediction' or 'predicted_value' (keep only 'predicted_value')
+            if 'prediction' in final_predictions_df.columns:
+                cols_to_drop.append('prediction')
+            if cols_to_drop:
+                final_predictions_df.drop(columns=cols_to_drop, inplace=True)
+
             # Overwrite the original scraper file with the updated data
             final_predictions_df.to_csv(scraped_csv_path, index=False)
             logging.info(f"✅ Updated predictions have been saved back to {scraped_csv_path}")
 
-            # Add residual column (prediction - actual)
-            final_predictions_df['residual'] = final_predictions_df['predicted_value'] - final_predictions_df['line']
+            # Calculate player_actual_sd: SD of actual stat values for each player+prop (2023–2025) using MLB API, fallback to BR if needed
+            def get_actual_stat_sd(player_name, prop_type):
+                # Map prop_type to stat name and API key
+                stat_map = {
+                    "Hits": ("hits", api_hitting_stat_map, 'H'),
+                    "Total Bases": ("total_bases", api_hitting_stat_map, 'TB'),
+                    "Runs": ("runs", api_hitting_stat_map, 'R'),
+                    "Pitcher Strikeouts": ("strikeouts", api_pitching_stat_map, 'PSO'),
+                    "Hitter Strikeouts": ("strikeouts", api_hitting_stat_map, 'HSO'),
+                    "Earned Runs Allowed": ("earned_runs_allowed", api_pitching_stat_map, 'ER'),
+                }
+                if prop_type not in stat_map:
+                    return 0.0
+                stat_name, stat_api_map, br_col = stat_map[prop_type]
+                # Find player_id
+                team_abbreviation = None
+                try:
+                    team_abbreviation = final_predictions_df.loc[
+                        final_predictions_df['player'] == player_name, 'team'
+                    ].values[0].split(' - ')[0].strip()
+                except Exception:
+                    pass
+                player_id = find_player_id_by_name(player_name, team_abbreviation, player_info_map, TEAM_ABBREVIATION_MAP)
+                # 1. Try MLB API
+                all_stats = []
+                if player_id:
+                    for year in [year_minus_2, year_minus_1, year_plus_0]:
+                        for log_group, stats, api_map in [
+                            ("hitting", hitting_stats, api_hitting_stat_map),
+                            ("pitching", pitching_stats, api_pitching_stat_map)
+                        ]:
+                            if stat_name not in stats:
+                                continue
+                            try:
+                                url = f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats?stats=gameLog&season={year}&group={log_group}"
+                                response = requests.get(url)
+                                response.raise_for_status()
+                                data = response.json()
+                                if data and 'stats' in data and len(data['stats']) > 0 and 'splits' in data['stats'][0]:
+                                    logs = data['stats'][0]['splits']
+                                    for game in logs:
+                                        stat_val = game.get('stat', {}).get(api_map.get(stat_name))
+                                        if stat_val is not None:
+                                            all_stats.append(float(stat_val))
+                            except Exception:
+                                continue
+                # 2. Fallback to BR if API fails or returns no data
+                if len(all_stats) <= 1:
+                    # Try BR fallback
+                    br_key = None
+                    from unidecode import unidecode
+                    norm_name = unidecode(player_name).lower()
+                    try:
+                        player_lookup_df = playerid_lookup(player_name.split()[-1], player_name.split()[0], fuzzy=True)
+                        if not player_lookup_df.empty:
+                            player_lookup_df = player_lookup_df[player_lookup_df['mlb_played_last'].notna()].sort_values('mlb_played_last', ascending=False)
+                            if not player_lookup_df.empty:
+                                br_key = player_lookup_df.iloc[0]['key_bbref']
+                    except Exception:
+                        pass
+                    if not br_key and team_abbreviation:
+                        player_map, team_to_names, all_names = build_br_roster_player_map()
+                        abbr = team_abbreviation.strip().upper()
+                        key = (norm_name, abbr)
+                        br_key = player_map.get(key)
+                        if not br_key:
+                            team_names = team_to_names.get(abbr, [])
+                            if team_names:
+                                names_only = [n for n, _ in team_names]
+                                best = process.extractOne(norm_name, names_only, score_cutoff=80)
+                                if best:
+                                    idx = names_only.index(best[0])
+                                    br_key = team_names[idx][1]
+                            if not br_key:
+                                all_names_only = [n for n, _, _ in all_names]
+                                best = process.extractOne(norm_name, all_names_only, score_cutoff=80)
+                                if best:
+                                    idx = all_names_only.index(best[0])
+                                    br_key = all_names[idx][1]
+                    if br_key:
+                        for year in [year_minus_2, year_minus_1, year_plus_0]:
+                            try:
+                                player_type_code = 'p' if prop_type in ["Pitcher Strikeouts", "Earned Runs Allowed"] else 'b'
+                                url = f"https://www.baseball-reference.com/players/gl.fcgi?id={br_key}&t={player_type_code}&year={year}"
+                                tables = pd.read_html(url)
+                                df = next((tbl for tbl in tables if 'Date' in tbl.columns and 'Rk' in tbl.columns), None)
+                                if df is not None:
+                                    df.columns = df.columns.get_level_values(-1)
+                                    df = df[df['Rk'].ne('Rk')].dropna(subset=['Date'])
+                                    if br_col in df.columns:
+                                        vals = pd.to_numeric(df[br_col], errors='coerce').dropna().tolist()
+                                        all_stats.extend(vals)
+                            except Exception:
+                                continue
+                if len(all_stats) > 1:
+                    return np.std(all_stats, ddof=0)
+                else:
+                    return 0.0
 
-            # Calculate rolling std per player+prop_type and set prediction column
-            player_prop_sd = final_predictions_df.groupby(['player', 'prop_type'])['residual'].transform(lambda x: x.std(ddof=0)).fillna(0)
-            final_predictions_df['player_prop_sd'] = player_prop_sd
-            # Set prediction: normalized if player_prop_sd > 0, else raw predicted_value
-            pred = final_predictions_df['predicted_value'] / final_predictions_df['player_prop_sd']
-            final_predictions_df['prediction'] = pred.where(final_predictions_df['player_prop_sd'] > 0, final_predictions_df['predicted_value'])
-            # Remove rolling_sd column if it exists
-            if 'rolling_sd' in final_predictions_df.columns:
-                final_predictions_df.drop(columns=['rolling_sd'], inplace=True)
+            # Apply to each row
+            final_predictions_df['player_actual_sd'] = final_predictions_df.apply(
+                lambda row: get_actual_stat_sd(row['player'], row['prop_type']), axis=1
+            )
 
             # Save with new columns as well
             final_predictions_df.to_csv(scraped_csv_path, index=False)
@@ -1117,8 +1220,5 @@ if __name__ == '__main__':
                 logging.info(f"\n{final_predictions_df.to_string()}")
         else:
             logging.info("No specific player prop predictions could be generated.")
-
-        # After all predictions:
-        save_br_scrape_results(br_scrape_results)
 
     logging.info("\nScript finished.")
