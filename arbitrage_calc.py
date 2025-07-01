@@ -3,7 +3,12 @@ from scipy.stats import norm
 import numpy as np
 import itertools
 
-df = pd.read_csv("all_player_prop_results.csv")
+PAYOUTS = {
+    3: {3: 3, 2: 1},           # 3-pick: 3/3=3x, 2/3=1x
+    4: {4: 6, 3: 1.5},         # 4-pick: 4/4=6x, 3/4=1.5x
+    5: {5: 10, 4: 2, 3: 0.4},  # 5-pick: 5/5=10x, 4/5=2x, 3/5=0.4x
+    6: {6: 25, 5: 2, 4: 0.4},  # 6-pick: 6/6=25x, 5/6=2x, 4/6=0.4x
+}
 
 def calculate_arbitrage_edge(row):
     predicted = row['predicted_value']
@@ -21,35 +26,48 @@ def calculate_arbitrage_edge(row):
 def determine_best_pick(row):
     return "More" if row['predicted_value'] > row['line'] else "Less"
 
-def generate_parlays(df, leg_sizes=[3, 4, 5, 6]):
-    # Only use top-ranked props (e.g., top 30 for efficiency)
+def parlay_ev(probs, payout_dict):
+    n = len(probs)
+    ev = 0
+    from itertools import combinations
+    for hits, payout in payout_dict.items():
+        k = hits
+        prob = 0
+        for hit_indices in combinations(range(n), k):
+            p = 1
+            for i in range(n):
+                if i in hit_indices:
+                    p *= probs[i]
+                else:
+                    p *= (1 - probs[i])
+            prob += p
+        ev += prob * payout
+    return ev
+
+def generate_parlays_with_ev(df, leg_sizes=[3, 4, 5, 6], top_n=5):
     top_props = df.head(30).copy()
-    # Each prop: (player, prop_type, arbitrage_edge)
     prop_tuples = list(top_props[['player', 'prop_type', 'arbitrage_edge']].itertuples(index=False, name=None))
-    # To avoid duplicate parlays with same set of players, keep a set of frozen player sets
     seen_player_sets = set()
     results = {k: [] for k in leg_sizes}
     for k in leg_sizes:
-        # Generate all k-combinations of props
         for combo in itertools.combinations(prop_tuples, k):
             players = [c[0] for c in combo]
-            # Skip if duplicate player in parlay
             if len(set(players)) < k:
                 continue
             player_set = frozenset(players)
-            # Skip if this set of players has already been used in a smaller parlay
             if player_set in seen_player_sets:
                 continue
             seen_player_sets.add(player_set)
-            # Parlay as list of (player, prop_type, edge)
             parlay = list(combo)
-            # Parlay edge: product of individual edges (proxy for likelihood)
-            parlay_edge = np.prod([c[2] for c in combo])
-            results[k].append((parlay, parlay_edge))
-        # Sort and keep only top_n
-        results[k] = sorted(results[k], key=lambda x: x[1], reverse=True)
+            # Estimate probability for each leg (replace with your own model if available)
+            probs = [0.5 + min(max(c[2], 0), 1) / 2 for c in combo]  # crude mapping from edge to prob
+            payout_dict = PAYOUTS[k]
+            ev = parlay_ev(probs, payout_dict)
+            results[k].append((parlay, ev))
+        results[k] = sorted(results[k], key=lambda x: x[1], reverse=True)[:top_n]
     return results
 
+df = pd.read_csv("all_player_prop_results.csv")
 df['arbitrage_edge'] = df.apply(calculate_arbitrage_edge, axis=1)
 df['best_pick'] = df.apply(determine_best_pick, axis=1)
 
@@ -61,11 +79,11 @@ df.to_csv("arbitrage_ranked_props.csv", index=False)
 
 print("✅ Arbitrage analysis saved to arbitrage_ranked_props.csv")
 
-# --- Parlay Generator ---
-parlay_results = generate_parlays(df, leg_sizes=[3, 4, 5, 6])
+# --- Parlay Generator with EV ---
+parlay_results = generate_parlays_with_ev(df, leg_sizes=[3, 4, 5, 6], top_n=5)
 for k in [3, 4, 5, 6]:
-    print(f"\nTop {len(parlay_results[k])} {k}-leg parlays:")
-    for i, (parlay, edge) in enumerate(parlay_results[k], 1):
-        print(f"{i}. Parlay edge: {edge:.4f}")
-        for player, prop, parlay_edge in parlay:
-            print(f"   - {player} | {prop} | edge: {parlay_edge}")
+    print(f"\nTop {len(parlay_results[k])} {k}-leg parlays by EV:")
+    for i, (parlay, ev) in enumerate(parlay_results[k], 1):
+        print(f"{i}. Parlay EV: {ev:.4f}")
+        for player, prop, edge in parlay:
+            print(f"   - {player} | {prop} | edge: {edge}")
