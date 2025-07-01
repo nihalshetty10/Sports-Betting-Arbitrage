@@ -44,27 +44,33 @@ def parlay_ev(probs, payout_dict):
         ev += prob * payout
     return ev
 
-def generate_parlays_with_ev(df, leg_sizes=[3, 4, 5, 6], top_n=5):
-    top_props = df.head(30).copy()
+def generate_parlays_with_ev(df, leg_sizes=[3, 4, 5, 6], prop_pool=100):
+    top_props = df.head(prop_pool).copy()
     prop_tuples = list(top_props[['player', 'prop_type', 'arbitrage_edge']].itertuples(index=False, name=None))
-    seen_player_sets = set()
     results = {k: [] for k in leg_sizes}
+    parlays_by_playerset = {k: [] for k in leg_sizes}
     for k in leg_sizes:
         for combo in itertools.combinations(prop_tuples, k):
             players = [c[0] for c in combo]
             if len(set(players)) < k:
                 continue
             player_set = frozenset(players)
-            if player_set in seen_player_sets:
+            # Overlap check: no more than floor(k/2) players in common with any existing parlay of same size
+            too_much_overlap = False
+            for existing in parlays_by_playerset[k]:
+                overlap = len(player_set & existing)
+                if overlap > k // 2:
+                    too_much_overlap = True
+                    break
+            if too_much_overlap:
                 continue
-            seen_player_sets.add(player_set)
+            parlays_by_playerset[k].append(player_set)
             parlay = list(combo)
-            # Estimate probability for each leg (replace with your own model if available)
-            probs = [0.5 + min(max(c[2], 0), 1) / 2 for c in combo]  # crude mapping from edge to prob
+            probs = [0.5 + min(max(c[2], 0), 1) / 2 for c in combo]
             payout_dict = PAYOUTS[k]
             ev = parlay_ev(probs, payout_dict)
             results[k].append((parlay, ev))
-        results[k] = sorted(results[k], key=lambda x: x[1], reverse=True)[:top_n]
+        results[k] = sorted(results[k], key=lambda x: x[1], reverse=True)
     return results
 
 df = pd.read_csv("all_player_prop_results.csv")
@@ -80,7 +86,7 @@ df.to_csv("arbitrage_ranked_props.csv", index=False)
 print("✅ Arbitrage analysis saved to arbitrage_ranked_props.csv")
 
 # --- Parlay Generator with EV ---
-parlay_results = generate_parlays_with_ev(df, leg_sizes=[3, 4, 5, 6], top_n=5)
+parlay_results = generate_parlays_with_ev(df, leg_sizes=[3, 4, 5, 6], prop_pool=100)
 for k in [3, 4, 5, 6]:
     print(f"\nTop {len(parlay_results[k])} {k}-leg parlays by EV:")
     for i, (parlay, ev) in enumerate(parlay_results[k], 1):
