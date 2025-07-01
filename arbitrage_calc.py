@@ -44,7 +44,7 @@ def parlay_ev(probs, payout_dict):
         ev += prob * payout
     return ev
 
-def generate_parlays_with_ev(df, leg_sizes=[3, 4, 5, 6], prop_pool=100):
+def generate_parlays_with_ev(df, leg_sizes=[3, 4, 5, 6], prop_pool=200):
     top_props = df.head(prop_pool).copy()
     prop_tuples = list(top_props[['player', 'prop_type', 'arbitrage_edge']].itertuples(index=False, name=None))
     results = {k: [] for k in leg_sizes}
