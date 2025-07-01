@@ -62,7 +62,7 @@ df.to_csv("arbitrage_ranked_props.csv", index=False)
 print("✅ Arbitrage analysis saved to arbitrage_ranked_props.csv")
 
 # --- Parlay Generator ---
-parlay_results = generate_parlays(df, leg_sizes=[3, 4, 5, 6], top_n=5)
+parlay_results = generate_parlays(df, leg_sizes=[3, 4, 5, 6])
 for k in [3, 4, 5, 6]:
     print(f"\nTop {len(parlay_results[k])} {k}-leg parlays:")
     for i, (parlay, edge) in enumerate(parlay_results[k], 1):
