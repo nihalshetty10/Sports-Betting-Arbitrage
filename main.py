@@ -13,3 +13,5 @@ if __name__ == "__main__":
     run_script("mlb_player_prop_model.py")
     run_script("arbitrage_calc.py")
     run_script("auto_bet_parlays.py")
+
+print("Done")
