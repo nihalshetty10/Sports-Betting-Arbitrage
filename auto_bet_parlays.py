@@ -62,6 +62,8 @@ for idx, row in good_parlays.iterrows():
         'total_edge': total_edge,
         'bet_size': bet_size,
         'picks': '|'.join(picks),
+        'parlay_players': '|'.join(players),
+        'parlay_props': '|'.join(props),
         'portfolio_after_bet': portfolio_after_bet
     })
     portfolio = portfolio_after_bet
