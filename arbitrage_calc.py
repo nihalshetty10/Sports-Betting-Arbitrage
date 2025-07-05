@@ -82,6 +82,17 @@ def generate_parlays_with_ev(df, leg_sizes=[3, 4, 5, 6], prop_pool=200):
         results[k] = sorted(results[k], key=lambda x: x[1], reverse=True)
     return results
 
+def calculate_model_prob(row):
+    predicted = row['predicted_value']
+    line = row['line']
+    sd = row.get('player_actual_sd', np.nan)
+    if pd.notna(sd) and sd > 0:
+        z = (predicted - line) / sd
+        prob = norm.cdf(z)
+        return prob
+    else:
+        return 0.5  # fallback if no SD
+
 # Use script-relative paths for all file operations
 script_dir = os.path.dirname(os.path.abspath(__file__))
 all_props_path = os.path.join(script_dir, "all_player_prop_results.csv")
@@ -91,6 +102,7 @@ parlay_results_path = os.path.join(script_dir, "parlay_results.csv")
 df = pd.read_csv(all_props_path)
 df['arbitrage_edge'] = df.apply(calculate_arbitrage_edge, axis=1)
 df['best_pick'] = df.apply(determine_best_pick, axis=1)
+df['model_prob'] = df.apply(calculate_model_prob, axis=1)
 
 # Sort by edge value descending
 df = df.sort_values(by="arbitrage_edge", ascending=False)
@@ -136,3 +148,4 @@ for k in [3, 4, 5, 6]:
 parlay_df = pd.DataFrame(parlay_rows)
 parlay_df.to_csv(parlay_results_path, index=False)
 print(f"✅ Parlay results saved to {parlay_results_path}")
+
