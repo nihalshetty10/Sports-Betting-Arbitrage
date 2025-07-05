@@ -95,6 +95,9 @@ df['best_pick'] = df.apply(determine_best_pick, axis=1)
 # Sort by edge value descending
 df = df.sort_values(by="arbitrage_edge", ascending=False)
 
+# Remove rows where prediction_status contains 'Player Not Found'
+df = df[~df['prediction_status'].str.contains('Player Not Found', na=False)]
+
 # Save to CSV
 df.to_csv(arb_ranked_path, index=False)
 
