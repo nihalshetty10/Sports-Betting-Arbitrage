@@ -1,6 +1,84 @@
 date,player,team,opponent,prop_type,line,predicted_value,prediction_status,player_actual_sd
-2025-06-27,Brett Baty,NYM - IF,ATL,Hits,0.5,0.49,Success from BR,0.7554337015480309
-2025-06-27,Luis Torrens,NYM - C,ATL,Total Bases,0.5,0.15,Success from BR,1.3457695648812025
-2025-06-27,Grant Holmes,ATL - P,NYM,Pitcher Strikeouts,5.5,6.0,Success (API),3.1585128388474017
-2025-06-27,Griffin Canning,NYM - P,ATL,Pitcher Strikeouts,4.5,2.21,Success from BR,
-2025-06-27,Nick Allen,ATL - IF,NYM,Hitter Strikeouts,0.5,0.28,Success from BR,0.9103921624003534
+2025-07-05,Nate Eaton,BOS - IF,WSH,Hits,0.5,0.17,Success from BR,0.45045375706904445
+2025-07-05,Gavin Lux,CIN - IF,PHI,Hits,0.5,0.42,Success from BR,0.858818133894263
+2025-07-05,Austin Hedges,CLE - C,DET,Hits,0.5,0.17,Success from BR,0.5519145937532277
+2025-07-05,Henry Davis,PIT - C,SEA,Hits,0.5,0.6,Success from BR,0.8081926140997765
+2025-07-05,Yandy Díaz,TB - IF,MIN,Total Bases,1.5,3.0,Success (API),1.8889115802749605
+2025-07-05,Byron Buxton,MIN - OF,TB,Total Bases,1.5,0.56,Success from BR,2.1920343799021302
+2025-07-05,Junior Caminero,TB - IF,MIN,Total Bases,1.5,4.03,Success from BR,2.0926650509841873
+2025-07-05,Kody Clemens,MIN - IF,TB,Total Bases,0.5,2.32,Success from BR,1.6448769532720424
+2025-07-05,Ian Happ,CHC - OF,STL,Total Bases,1.5,2.47,Success from BR,1.8528636402292986
+2025-07-05,Brendan Donovan,STL - IF,CHC,Total Bases,1.5,4.0,Success (API),1.6265516621895886
+2025-07-05,Alec Burleson,STL - IF,CHC,Total Bases,1.5,2.0,Success (API),1.6787824926405361
+2025-07-05,Dansby Swanson,CHC - IF,STL,Total Bases,1.5,2.24,Success from BR,
+2025-07-05,Willson Contreras,STL - IF,CHC,Total Bases,1.5,0.8,Success from BR,1.7253870091830663
+2025-07-05,Masyn Winn,STL - IF,CHC,Total Bases,1.5,1.0,Success (API),1.6020130171352251
+2025-07-05,Nate Eaton,BOS - IF,WSH,Total Bases,0.5,0.13,Success from BR,
+2025-07-05,Cedric Mullins,BAL - OF,ATL,Total Bases,0.5,0.35,Success from BR,
+2025-07-05,Gary Sánchez,BAL - C,ATL,Total Bases,0.5,0.82,Success from BR,
+2025-07-05,Jordan Beck,COL - OF,CWS,Total Bases,1.5,1.98,Success from BR,
+2025-07-05,Denzel Clarke,ATH - OF,SF,Total Bases,0.5,0.81,Success from BR,
+2025-07-05,Rafael Devers,SF - DH,ATH,Total Bases,1.5,1.0,Success (API),2.1122070685932237
+2025-07-05,Cole Young,SEA - IF,PIT,Total Bases,0.5,0.32,Success from BR,
+2025-07-05,Yandy Díaz,TB - IF,MIN,Runs,0.5,0.0,Success (API),0.7009102712246237
+2025-07-05,Byron Buxton,MIN - OF,TB,Runs,0.5,0.67,Success from BR,
+2025-07-05,Junior Caminero,TB - IF,MIN,Runs,0.5,0.66,Success from BR,
+2025-07-05,Dansby Swanson,CHC - IF,STL,Runs,0.5,1.01,Success from BR,
+2025-07-05,Bo Bichette,TOR - IF,LAA,Runs,0.5,1.0,Success (API),0.6278278703531013
+2025-07-05,Mike Trout,LAA - OF,TOR,Runs,0.5,1.1,Success from BR,
+2025-07-05,Addison Barger,TOR - IF,LAA,Runs,0.5,1.01,Success from BR,
+2025-07-05,CJ Abrams,WSH - IF,BOS,Runs,0.5,0.0,Success (API),0.7468486302218108
+2025-07-05,Bobby Witt Jr.,KC - IF,AZ,Runs,0.5,0.0,Success (API),0.7946583429175545
+2025-07-05,William Contreras,MIL - C,MIA,Runs,0.5,0.0,Success (API),0.7394404687499306
+2025-07-05,Sal Frelick,MIL - OF,MIA,Runs,0.5,0.0,Success (API),0.6869503886597224
+2025-07-05,Ben Rice,NYY - IF,NYM,Runs,0.5,0.11,Success from BR,
+2025-07-05,Brooks Baldwin,CWS - IF,COL,Runs,0.5,0.27,Success from BR,
+2025-07-05,Kyle Teel,CWS - C,COL,Runs,0.5,0.1,Success from BR,
+2025-07-05,Manny Machado,SD - IF,TEX,Runs,0.5,1.0,Success (API),0.7525867882817564
+2025-07-05,Matt Chapman,SF - IF,ATH,Runs,0.5,0.47,Success from BR,
+2025-07-05,Taj Bradley,TB - P,MIN,Pitcher Strikeouts,5.0,7.55,Success from BR,
+2025-07-05,Matthew Liberatore,STL - P,CHC,Pitcher Strikeouts,4.0,8.0,Success (API),2.045301194508988
+2025-07-05,Jack Kochanowicz,LAA - P,TOR,Pitcher Strikeouts,2.5,4.23,Success from BR,
+2025-07-05,Max Scherzer,TOR - P,LAA,Pitcher Strikeouts,6.0,3.36,Success from BR,
+2025-07-05,Mitchell Parker,WSH - P,BOS,Pitcher Strikeouts,4.5,4.88,Success from BR,
+2025-07-05,Walker Buehler,BOS - P,WSH,Pitcher Strikeouts,4.0,4.23,Success from BR,
+2025-07-05,Nick Lodolo,CIN - P,PHI,Pitcher Strikeouts,5.0,5.0,Success (API),2.330050600838775
+2025-07-05,Ranger Suárez,PHI - P,CIN,Pitcher Strikeouts,6.0,4.79,Success from BR,
+2025-07-05,Ryne Nelson,AZ - P,KC,Pitcher Strikeouts,4.0,2.4,Success from BR,
+2025-07-05,Michael Wacha,KC - P,AZ,Pitcher Strikeouts,4.0,7.0,Success (API),2.2087026388671647
+2025-07-05,Cal Quantrill,MIA - P,MIL,Pitcher Strikeouts,3.0,3.78,Success from BR,
+2025-07-05,Chad Patrick,MIL - P,MIA,Pitcher Strikeouts,5.0,7.0,Success (API),2.1921577396609844
+2025-07-05,Dean Kremer,BAL - P,ATL,Pitcher Strikeouts,4.5,3.0,Success (API),2.146449017622016
+2025-07-05,Carlos Rodón,NYY - P,NYM,Pitcher Strikeouts,6.0,4.0,Success (API),2.344999666844326
+2025-07-05,Frankie Montas,NYM - P,NYY,Pitcher Strikeouts,5.5,5.18,Success from BR,
+2025-07-05,Logan Allen,CLE - P,DET,Pitcher Strikeouts,4.0,2.7,Success from BR,
+2025-07-05,Casey Mize,DET - P,CLE,Pitcher Strikeouts,4.0,2.4,Success from BR,
+2025-07-05,Framber Valdez,HOU - P,LAD,Pitcher Strikeouts,5.0,5.0,Success (API),2.5731338879934262
+2025-07-05,Germán Márquez,COL - P,CWS,Pitcher Strikeouts,4.0,4.35,Success from BR,
+2025-07-05,Jonathan Cannon,CWS - P,COL,Pitcher Strikeouts,4.0,4.35,Success from BR,
+2025-07-05,Patrick Corbin,TEX - P,SD,Pitcher Strikeouts,3.5,6.0,Success (API),2.025711986694153
+2025-07-05,Stephen Kolek,SD - P,TEX,Pitcher Strikeouts,4.0,3.8,Success from BR,
+2025-07-05,Logan Webb,SF - P,ATH,Pitcher Strikeouts,7.0,3.0,Success (API),2.1809770740960177
+2025-07-05,Luis Severino,ATH - P,SF,Pitcher Strikeouts,4.5,4.0,Success (API),1.9875803829145409
+2025-07-05,Luis Castillo,SEA - P,PIT,Pitcher Strikeouts,5.5,7.0,Success (API),2.2005112262982145
+2025-07-05,Mike Burrows,PIT - P,SEA,Pitcher Strikeouts,4.5,4.88,Success from BR,
+2025-07-05,Alec Burleson,STL - IF,CHC,Hitter Strikeouts,0.5,0.0,Success (API),0.6527111120207354
+2025-07-05,Kyle Tucker,CHC - OF,STL,Hitter Strikeouts,0.5,2.0,Success (API),0.75906745643459
+2025-07-05,Luis García,WSH - IF,BOS,Hitter Strikeouts,0.5,0.88,Success from BR,0.6817949036605067
+2025-07-05,Jacob Young,WSH - OF,BOS,Hitter Strikeouts,0.5,1.19,Success from BR,
+2025-07-05,Kyle Isbel,KC - OF,AZ,Hitter Strikeouts,0.5,0.0,Success from BR,
+2025-07-05,Nick Loftin,KC - IF,AZ,Hitter Strikeouts,0.5,0.63,Success from BR,
+2025-07-05,Lourdes Gurriel Jr.,AZ - OF,KC,Hitter Strikeouts,0.5,1.0,Success (API),0.7483314773547882
+2025-07-05,Jake McCarthy,AZ - OF,KC,Hitter Strikeouts,0.5,0.08,Success from BR,
+2025-07-05,Sal Frelick,MIL - OF,MIA,Hitter Strikeouts,0.5,1.0,Success (API),0.669914430357174
+2025-07-05,Jurickson Profar,ATL - OF,BAL,Hitter Strikeouts,0.5,0.0,Success (API),0.7939725373159267
+2025-07-05,Nick Allen,ATL - IF,BAL,Hitter Strikeouts,0.5,1.14,Success from BR,0.9039509536224181
+2025-07-05,Mookie Betts,LAD - IF,HOU,Hitter Strikeouts,0.5,0.0,Success (API),0.7007707984706756
+2025-07-05,Tommy Edman,LAD - OF,HOU,Hitter Strikeouts,0.5,0.68,Success from BR,
+2025-07-05,Marcus Semien,TEX - IF,SD,Hitter Strikeouts,0.5,1.0,Success (API),0.7564560969449263
+2025-07-05,Manny Machado,SD - IF,TEX,Hitter Strikeouts,0.5,0.0,Success (API),0.8164161503669352
+2025-07-05,Jake Cronenworth,SD - IF,TEX,Hitter Strikeouts,0.5,0.46,Success from BR,
+2025-07-05,Xander Bogaerts,SD - IF,TEX,Hitter Strikeouts,0.5,0.0,Success (API),0.7764146973795394
+2025-07-05,Isiah Kiner-Falefa,PIT - IF,SEA,Hitter Strikeouts,0.5,0.61,Success from BR,
+2025-07-05,Michael Wacha,KC - P,AZ,Earned Runs Allowed,2.5,2.0,Success (API),1.7721772611389526
+2025-07-05,Frankie Montas,NYM - P,NYY,Earned Runs Allowed,2.5,1.46,Success from BR,
