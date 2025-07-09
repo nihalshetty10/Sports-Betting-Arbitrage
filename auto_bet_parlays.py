@@ -82,6 +82,17 @@ def get_model_probs(players, props):
             probs.append(0.5)  # fallback if missing
     return probs
 
+# Helper: get line for each leg from arbitrage_ranked_props.csv
+def get_lines(players, props):
+    lines = []
+    for player, prop in zip(players, props):
+        row = arb[(arb['player'] == player) & (arb['prop_type'] == prop)]
+        if not row.empty and not pd.isna(row.iloc[0]['line']):
+            lines.append(str(row.iloc[0]['line']))
+        else:
+            lines.append('N/A')
+    return lines
+
 # Kelly formula for parlays
 def kelly_fraction(ev, win_prob, payout):
     b = payout - 1
@@ -102,6 +113,7 @@ for idx, row in good_parlays.iterrows():
     edges = [float(e) for e in row['parlay_edges'].split('|')]
     picks = get_picks(players, props)
     model_probs = get_model_probs(players, props)
+    lines = get_lines(players, props)
     # Probability of getting any payout (any win)
     your_win_prob = parlay_your_win_prob(model_probs, PAYOUTS[leg_size])
     # Use main payout for Kelly (all legs hit)
@@ -122,11 +134,14 @@ for idx, row in good_parlays.iterrows():
         'picks': '|'.join(picks),
         'parlay_players': '|'.join(players),
         'parlay_props': '|'.join(props),
+        'parlay_lines': '|'.join(lines),
         'your_win_prob': your_win_prob,
         'portfolio_after_bet': portfolio_after_bet
     })
     portfolio = portfolio_after_bet
 
 bet_df = pd.DataFrame(bet_rows)
+# Sort by your_win_prob descending
+bet_df = bet_df.sort_values(by='your_win_prob', ascending=False)
 bet_df.to_csv(os.path.join(script_dir, "auto_bet_log.csv"), index=False)
 print(f"✅ Auto bet log saved to auto_bet_log.csv. Final portfolio: ${portfolio:.2f}") 
