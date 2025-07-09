@@ -4,7 +4,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
-import os
 
 # MLB props
 stat_categories = [
@@ -55,9 +54,22 @@ def scrape_prizepicks_props():
             continue
 
         print("⏬ Scrolling to load all props...")
-        for _ in range(30):
+        prev_count = 0
+        scroll_attempts = 0
+
+        while scroll_attempts < 40:
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1.5)
+            time.sleep(2)
+
+            cards = driver.find_elements(By.CSS_SELECTOR, "li[aria-label]")
+            current_count = len(cards)
+
+            if current_count == prev_count:
+                scroll_attempts += 1
+            else:
+                scroll_attempts = 0
+
+            prev_count = current_count
 
         try:
             WebDriverWait(driver, 10).until(
@@ -75,11 +87,7 @@ def scrape_prizepicks_props():
         for card in cards:
             try:
                 buttons = card.find_elements(By.CSS_SELECTOR, "button")
-                visible_buttons = [
-                    b for b in buttons
-                    if b.is_displayed() and b.text.strip() in ["Less", "More"]
-                ]
-                labels = [b.text.strip() for b in visible_buttons]
+                labels = [b.text.strip() for b in buttons if b.text.strip() in ["Less", "More"]]
                 if not ("Less" in labels and "More" in labels):
                     continue
 
@@ -135,12 +143,8 @@ def scrape_prizepicks_props():
         print(df)
 
     df_output = df[["player", "team", "opponent", "prop_type", "line"]]
-    
-    # Save the DataFrame to a CSV file in the same directory as the script
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_path = os.path.join(script_dir, "scraped_prizepicks_props.csv")
-    df_output.to_csv(output_path, index=False)
-    print(f"📁 Output saved to '{output_path}'")
+    df_output.to_csv("mlb_prizepicks_props.csv", index=False)
+    print("📁 Output saved to 'mlb_prizepicks_props.csv'")
 
     return df_output
 
