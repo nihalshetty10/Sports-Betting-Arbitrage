@@ -100,6 +100,16 @@ def kelly_fraction(ev, win_prob, payout):
     f = (ev * win_prob - q) / b if b > 0 else 0
     return max(0, min(f, 1))
 
+# Compute your_win_prob for sorting
+def compute_your_win_prob(row):
+    players = row['parlay_players'].split('|')
+    props = row['parlay_props'].split('|')
+    model_probs = get_model_probs(players, props)
+    return parlay_your_win_prob(model_probs, PAYOUTS[row['leg_size']])
+
+good_parlays['your_win_prob'] = good_parlays.apply(compute_your_win_prob, axis=1)
+good_parlays = good_parlays.sort_values(by='your_win_prob', ascending=False).reset_index(drop=True)
+
 portfolio = 100.0
 bet_rows = []
 
@@ -123,7 +133,7 @@ for idx, row in good_parlays.iterrows():
     # Kelly fraction (capped between 0.25 and 0.5), now using your_win_prob
     kelly = kelly_fraction(ev, your_win_prob, main_payout)
     kelly_frac = min(max(kelly, 0.25), 0.5)
-    bet_size = round(portfolio * kelly_frac, 2)
+    bet_size = min(round(portfolio * kelly_frac, 2), 20)
     portfolio_after_bet = round(portfolio - bet_size, 2)
     bet_rows.append({
         'parlay_id': parlay_id,
@@ -141,7 +151,5 @@ for idx, row in good_parlays.iterrows():
     portfolio = portfolio_after_bet
 
 bet_df = pd.DataFrame(bet_rows)
-# Sort by your_win_prob descending
-bet_df = bet_df.sort_values(by='your_win_prob', ascending=False)
 bet_df.to_csv(os.path.join(script_dir, "auto_bet_log.csv"), index=False)
 print(f"✅ Auto bet log saved to auto_bet_log.csv. Final portfolio: ${portfolio:.2f}") 
