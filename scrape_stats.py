@@ -107,11 +107,12 @@ def scrape_game_stats(driver, url):
     return stats
 
 def run_scraper():
-    if len(sys.argv) != 2:
-        print("Usage: python scrape_game_stats.py MM-DD-YYYY")
-        return
+    if len(sys.argv) == 2:
+        input_date = sys.argv[1]
+    else:
+        input_date = datetime.today().strftime("%m-%d-%Y")
+        print(f"No date provided, defaulting to today: {input_date}")
 
-    input_date = sys.argv[1]
     try:
         date_obj = datetime.strptime(input_date, "%m-%d-%Y")
     except ValueError:
